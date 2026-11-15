@@ -40,10 +40,9 @@ function stubRect(el: Element, size = 200): void {
 
 beforeEach(() => {
   stubMatchMedia();
-  // jsdom has no canvas; return null so the renderer's NullRenderer
-  // fallback engages without "Not implemented" console noise.
-  HTMLCanvasElement.prototype.getContext = (() =>
-    null) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  // Canvas contexts come from tests/setup.ts (registered in
+  // vite.config.ts): a no-op 2D context drives the Canvas2DRenderer
+  // path and keeps uPlot's deferred commits from crashing in jsdom.
 });
 
 afterEach(() => {

@@ -12,8 +12,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  detect:
+    name: Detect backend presence
+    runs-on: ubuntu-latest
+    outputs:
+      has_backend: ${{ steps.check.outputs.has_backend }}
+    steps:
+      - uses: actions/checkout@v4
+      # Frontend-only branches carry no backend/ tree; gate the Rust,
+      # supply-chain and Docker jobs so they are skipped instead of red.
+      - id: check
+        run: |
+          if [ -f backend/Cargo.toml ]; then
+            echo "has_backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
   backend:
     name: Backend (fmt, clippy, test)
+    needs: detect
+    if: needs.detect.outputs.has_backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,6 +51,8 @@ jobs:
 
   supply-chain:
     name: Supply chain (cargo deny)
+    needs: detect
+    if: needs.detect.outputs.has_backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +84,8 @@ jobs:
 
   docker:
     name: Docker image build + smoke (no push)
+    needs: detect
+    if: needs.detect.outputs.has_backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
