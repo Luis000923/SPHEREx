@@ -14,8 +14,14 @@
 //! float32-LE base64 rasters sorted by observation time.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 
-use axum::{extract::State, http::Uri, Json};
+use axum::body::Bytes;
+use axum::response::{IntoResponse, Response};
+use axum::{extract::State, http::header, http::Uri};
+use ndarray::Array2;
+use rayon::prelude::*;
 use tracing::warn;
 
 use crate::error::AppError;
@@ -41,7 +47,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 pub(crate) async fn get_frames<S: FrameSource>(
     State(state): State<AppState<S>>,
     uri: Uri,
-) -> Result<Json<FramesResponseDto>, AppError> {
+) -> Result<Response, AppError> {
     let p = params::frames_params(&uri)?;
 
     // One deadline for the whole request: SIA search + cutouts.
@@ -78,10 +84,11 @@ pub(crate) async fn get_frames<S: FrameSource>(
     )
     .await;
     let n_decoded = fetched.frames.len();
+    let deadline_hit = fetched.deadline_hit;
     if n_decoded == 0 {
         // Contract: a deadline with nothing decoded is an upstream
         // failure (502), not an empty 200.
-        return Err(if fetched.deadline_hit {
+        return Err(if deadline_hit {
             AppError::UpstreamUnavailable
         } else {
             fetched
@@ -101,49 +108,309 @@ pub(crate) async fn get_frames<S: FrameSource>(
         output_npix(p.fov_deg, &cutouts, state.output_npix).min(payload_npix_cap(cutouts.len()));
     let grid = OutputGrid::centered_north_first(p.ra_deg, p.dec_deg, p.fov_deg, npix)
         .map_err(AppError::from)?;
+
+    // A repeated identical request skips reprojection/compose/encode
+    // entirely: the serialized body is cached keyed by the parameters
+    // plus a fingerprint of the decoded inputs (task p1).
+    let key = RespKey::new(
+        &p,
+        cap,
+        state.output_npix,
+        npix,
+        total_observations,
+        &cutouts,
+    );
+    let cache = response_cache();
+    if let Some(body) = cache.get(&key).await {
+        RESP_HITS.fetch_add(1, Ordering::Relaxed);
+        return Ok(json_response(body));
+    }
+    RESP_MISSES.fetch_add(1, Ordering::Relaxed);
+
     let ropts = ReprojectOptions {
         interp: Interp::Bilinear,
         subtract_zodi: p.subtract_zodi,
     };
-    let mut images = Vec::with_capacity(cutouts.len());
-    for c in &cutouts {
-        images.push(reproject(&c.frame, &grid, &ropts).map_err(AppError::from)?);
-    }
+    // Reproject/compose/encode is pure CPU work: run it on the
+    // blocking pool so it never starves async workers, and spread the
+    // frames over the rayon pool inside it.
+    let work = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, AppError> {
+        let images: Vec<ScienceImage> = cutouts
+            .par_iter()
+            .map(|c| reproject(&c.frame, &grid, &ropts))
+            .collect::<Result<_, _>>()
+            .map_err(AppError::from)?;
 
-    let outs = compose(p.mode, &cutouts, images)?;
-    let mut frames: Vec<FrameDto> = outs
-        .iter()
-        .filter_map(|o| frame_dto(o, &cutouts, &grid, p.mode))
-        .collect();
-    frames.sort_by(|a, b| {
-        a.obs_mjd_start
-            .total_cmp(&b.obs_mjd_start)
-            .then(a.detector.cmp(&b.detector))
-            .then(a.wavelength_um.total_cmp(&b.wavelength_um))
+        let outs = compose(p.mode, &cutouts, images)?;
+        let mut frames: Vec<FrameDto> = outs
+            .iter()
+            .filter_map(|o| frame_dto(o, &cutouts, &grid, p.mode))
+            .collect();
+        frames.sort_by(|a, b| {
+            a.obs_mjd_start
+                .total_cmp(&b.obs_mjd_start)
+                .then(a.detector.cmp(&b.detector))
+                .then(a.wavelength_um.total_cmp(&b.wavelength_um))
+        });
+
+        let unit = cutouts
+            .first()
+            .and_then(|c| c.frame.header.unit.clone())
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| "MJy/sr".to_string());
+
+        let dto = FramesResponseDto {
+            query: QueryEcho {
+                ra_deg: p.ra_deg,
+                dec_deg: p.dec_deg,
+                fov_deg: p.fov_deg,
+                mode: p.mode,
+            },
+            width: grid.nx,
+            height: grid.ny,
+            unit,
+            frames,
+            flag_legend: response_legend(&cutouts),
+            truncated,
+            total_observations,
+        };
+        serde_json::to_vec(&dto).map_err(|_| AppError::Internal)
     });
+    let body = match work.await {
+        Ok(Ok(b)) => Bytes::from(b),
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(AppError::Internal),
+    };
 
-    let unit = cutouts
-        .first()
-        .and_then(|c| c.frame.header.unit.clone())
-        .map(|u| u.trim().to_string())
-        .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| "MJy/sr".to_string());
+    // Do not cache a response built while the deadline was still
+    // cutting fetches short: the contract expects a repeated request to
+    // return the completed set once the background fetches land.
+    if !deadline_hit {
+        cache.insert(key, body.clone()).await;
+    }
+    Ok(json_response(body))
+}
 
-    Ok(Json(FramesResponseDto {
-        query: QueryEcho {
-            ra_deg: p.ra_deg,
-            dec_deg: p.dec_deg,
-            fov_deg: p.fov_deg,
-            mode: p.mode,
-        },
-        width: grid.nx,
-        height: grid.ny,
-        unit,
-        frames,
-        flag_legend: response_legend(&cutouts),
-        truncated,
-        total_observations,
-    }))
+/// JSON body with the `Content-Type` `Json` would set.
+fn json_response(body: Bytes) -> Response {
+    ([(header::CONTENT_TYPE, "application/json")], body).into_response()
+}
+
+// ---------------------------------------------------------------------
+// Response cache (task p1): a repeated identical request answers with
+// the serialized body computed the first time. The cache is process
+// wide (states are per-request clones, so a per-state cache would never
+// be warm); cross-source contamination is impossible because the key
+// carries a fingerprint of the decoded inputs, not just the URI.
+// ---------------------------------------------------------------------
+
+/// Cache key for a decoded `/frames` response.
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct RespKey {
+    /// `ra` (f64 bits, post-validation and preset snap).
+    ra: u64,
+    /// `dec` (f64 bits).
+    dec: u64,
+    /// `fov` (f64 bits).
+    fov: u64,
+    /// `mode` discriminant.
+    mode: u8,
+    /// `detector` filter (0 = none).
+    detector: u8,
+    /// Effective `max_frames` cap after the configured ceiling.
+    cap: u64,
+    /// `subtract_zodi`.
+    zodi: bool,
+    /// Configured `OUTPUT_NPIX`.
+    out_npix: u64,
+    /// Effective raster side after the native-scale/payload rules.
+    npix: u64,
+    /// Content fingerprint of the decoded inputs
+    /// (`response_fingerprint`).
+    fingerprint: u64,
+}
+
+impl RespKey {
+    fn new(
+        p: &params::FramesParams,
+        cap: usize,
+        out_npix: usize,
+        npix: usize,
+        total_observations: usize,
+        cutouts: &[CutoutFrame],
+    ) -> Self {
+        Self {
+            ra: p.ra_deg.to_bits(),
+            dec: p.dec_deg.to_bits(),
+            fov: p.fov_deg.to_bits(),
+            mode: p.mode as u8,
+            detector: p.detector.unwrap_or(0),
+            cap: cap as u64,
+            zodi: p.subtract_zodi,
+            out_npix: out_npix as u64,
+            npix: npix as u64,
+            fingerprint: response_fingerprint(total_observations, cutouts),
+        }
+    }
+}
+
+/// 64-bit FNV-1a fingerprint of everything the response body depends on
+/// besides the request parameters: the observation count (drives
+/// `total_observations`/`truncated`), which observations decoded, their
+/// metadata used in the response, and the frame contents (sampled).
+fn response_fingerprint(total_observations: usize, cutouts: &[CutoutFrame]) -> u64 {
+    let mut h = fnv_u64(FNV_OFFSET, total_observations as u64);
+    for c in cutouts {
+        let o = &c.observation;
+        h = fnv_bytes(h, o.access_url.as_bytes());
+        for v in [o.t_min_mjd, o.t_max_mjd, o.em_min_um, o.em_max_um] {
+            h = fnv_u64(h, v.to_bits());
+        }
+        let f = &c.frame;
+        let (ny, nx) = f.image.dim();
+        h = fnv_u64(h, nx as u64);
+        h = fnv_u64(h, ny as u64);
+        h = fnv_u64(h, u64::from(f.header.detector.unwrap_or(0)));
+        h = fnv_u64(h, f.header.mjd_avg.unwrap_or(f64::NAN).to_bits());
+        h = fnv_u64(h, f.header.mjd_obs.unwrap_or(f64::NAN).to_bits());
+        h = fnv_bytes(h, f.header.unit.as_deref().unwrap_or("").as_bytes());
+        for (bit, fb) in &f.header.flag_legend {
+            h = fnv_u64(h, u64::from(*bit));
+            h = fnv_bytes(h, fb.name.as_bytes());
+        }
+        for v in f
+            .wcs
+            .crpix
+            .iter()
+            .chain(f.wcs.crval.iter())
+            .chain(f.wcs.cd[0].iter())
+            .chain(f.wcs.cd[1].iter())
+        {
+            h = fnv_u64(h, v.to_bits());
+        }
+        let (cx, cy) = ((nx as f64 + 1.0) / 2.0, (ny as f64 + 1.0) / 2.0);
+        h = fnv_u64(h, f.wavelength.wavelength_at(cx, cy).to_bits());
+        h = fnv_u64(h, f.wavelength.bandwidth_at(cx, cy).to_bits());
+        h = arr_fp(h, &f.image);
+        h = arr_fp(h, &f.variance);
+        h = arr_fp_i(h, &f.flags);
+        h = arr_fp(h, &f.zodi);
+    }
+    h
+}
+
+/// Strided sample cap for the raster fingerprint; bounds the hashing
+/// cost on large cutouts while still covering the whole plane.
+const FP_SAMPLES: usize = 1024;
+
+/// Mix a sampled f32 raster into `h`.
+fn arr_fp(mut h: u64, a: &Array2<f32>) -> u64 {
+    h = fnv_u64(h, a.len() as u64);
+    let stride = (a.len() / FP_SAMPLES).max(1);
+    for v in a.iter().step_by(stride) {
+        h = fnv_u64(h, u64::from(v.to_bits()));
+    }
+    h
+}
+
+/// Mix a sampled i32 raster into `h`.
+fn arr_fp_i(mut h: u64, a: &Array2<i32>) -> u64 {
+    h = fnv_u64(h, a.len() as u64);
+    let stride = (a.len() / FP_SAMPLES).max(1);
+    for v in a.iter().step_by(stride) {
+        h = fnv_u64(h, u64::from(*v as u32));
+    }
+    h
+}
+
+fn fnv_u64(h: u64, v: u64) -> u64 {
+    (h ^ v).wrapping_mul(FNV_PRIME)
+}
+
+fn fnv_bytes(mut h: u64, bs: &[u8]) -> u64 {
+    for b in bs {
+        h = fnv_u64(h, u64::from(*b));
+    }
+    h
+}
+
+type ResponseCache = moka::future::Cache<RespKey, Bytes>;
+
+/// Process-wide response cache. `None` until first use or until
+/// [`configure_response_cache`] sizes it from `MAX_CACHE_MB`.
+static RESPONSE_CACHE: RwLock<Option<ResponseCache>> = RwLock::new(None);
+
+/// Cache hit/miss counters (see [`response_cache_stats`]).
+static RESP_HITS: AtomicU64 = AtomicU64::new(0);
+static RESP_MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// Default byte budget when no config call happens (test states built
+/// by struct literal).
+const DEFAULT_RESPONSE_CACHE_BYTES: u64 = 32 * 1024 * 1024;
+/// Hard bounds on the configured budget: enough for one worst-case
+/// body at the low end, generous but bounded at the high end.
+const MIN_RESPONSE_CACHE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_RESPONSE_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+
+fn build_response_cache(max_bytes: u64) -> ResponseCache {
+    ResponseCache::builder()
+        .max_capacity(max_bytes)
+        .weigher(|_k: &RespKey, v: &Bytes| {
+            u32::try_from(v.len().saturating_add(256)).unwrap_or(u32::MAX)
+        })
+        .build()
+}
+
+fn response_cache() -> ResponseCache {
+    if let Some(c) = RESPONSE_CACHE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
+        return c.clone();
+    }
+    let mut g = RESPONSE_CACHE.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = g.as_ref() {
+        return c.clone();
+    }
+    let c = build_response_cache(DEFAULT_RESPONSE_CACHE_BYTES);
+    *g = Some(c.clone());
+    c
+}
+
+/// (Re)size the shared response cache; called once from
+/// `AppState::from_config` with a quarter of `MAX_CACHE_MB` (the
+/// decoded-result budget is the envelope, derived results get a share,
+/// clamped to [`MIN_RESPONSE_CACHE_BYTES`]..[`MAX_RESPONSE_CACHE_BYTES`]).
+/// Rebuilding drops existing entries, so it is a startup call.
+pub(crate) fn configure_response_cache(max_bytes: u64) {
+    let cap = max_bytes.clamp(MIN_RESPONSE_CACHE_BYTES, MAX_RESPONSE_CACHE_BYTES);
+    let mut g = RESPONSE_CACHE.write().unwrap_or_else(|e| e.into_inner());
+    *g = Some(build_response_cache(cap));
+}
+
+/// Snapshot counters of the `/frames` response cache. Test/diagnostic
+/// surface, not part of the public API contract.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResponseCacheStats {
+    /// Live entries in the cache.
+    pub entries: u64,
+    /// Requests answered from the cache.
+    pub hits: u64,
+    /// Requests that had to recompute.
+    pub misses: u64,
+}
+
+/// [`ResponseCacheStats`] of the shared cache.
+#[doc(hidden)]
+pub fn response_cache_stats() -> ResponseCacheStats {
+    ResponseCacheStats {
+        entries: response_cache().entry_count(),
+        hits: RESP_HITS.load(Ordering::Relaxed),
+        misses: RESP_MISSES.load(Ordering::Relaxed),
+    }
 }
 
 /// Output samples per native detector pixel. SPHEREx pixels are ~6.2"

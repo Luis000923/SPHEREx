@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 
 use ndarray::Array2;
+use rayon::prelude::*;
 
 use crate::fits::{FlagLegend, Frame};
 
@@ -130,6 +131,99 @@ pub fn stack_images(
         check_compatible(first, im)?;
     }
     let grid = first.grid;
+    // Flat row-major slices when every raster is standard layout
+    // (always true for `ScienceImage`s built by this crate); the scalar
+    // loop covers the generic-layout case.
+    let planes: Option<Vec<StackPlanes<'_>>> = images
+        .iter()
+        .map(|im| {
+            Some(StackPlanes {
+                image: im.image.as_slice()?,
+                variance: im.variance.as_slice()?,
+                flags: im.flags.as_slice()?,
+            })
+        })
+        .collect();
+    let mut out = match planes {
+        Some(p) => stack_planes(grid, &p, opts),
+        None => stack_scalar(images, grid, opts),
+    };
+    out.detector = common_detector(images);
+    out.wavelength_um = mean_f64(images.iter().map(|im| im.wavelength_um));
+    out.mjd = mean_opt(images.iter().map(|im| im.mjd));
+    out.zodi_subtracted = images.iter().all(|im| im.zodi_subtracted);
+    Ok(out)
+}
+
+/// Below this many pixel x image products, rows stack serially; above
+/// it they are spread over the rayon pool.
+const STACK_PAR_MIN: usize = 1 << 16;
+
+/// Flat views of one input's image/variance/flags rasters.
+struct StackPlanes<'a> {
+    image: &'a [f32],
+    variance: &'a [f32],
+    flags: &'a [i32],
+}
+
+/// One output row of [`stack_planes`].
+struct StackRow {
+    image: Vec<f32>,
+    variance: Vec<f32>,
+    flags: Vec<i32>,
+    n_contrib: Vec<u16>,
+}
+
+/// [`stack_images`] on contiguous planes: per-pixel accumulation order
+/// identical to the scalar loop, rows rendered in parallel.
+fn stack_planes(grid: OutputGrid, ims: &[StackPlanes<'_>], opts: &StackOptions) -> ScienceImage {
+    let (ny, nx) = (grid.ny, grid.nx);
+    let mask = opts.bad_flags_mask;
+    let render = |y: usize| {
+        let mut row = StackRow {
+            image: vec![f32::NAN; nx],
+            variance: vec![f32::NAN; nx],
+            flags: vec![0; nx],
+            n_contrib: vec![0; nx],
+        };
+        let base = y * nx;
+        for x in 0..nx {
+            let p = base + x;
+            let (mut num, mut wsum, mut n, mut fl) = (0.0f64, 0.0f64, 0u16, 0i32);
+            for im in ims {
+                let v = im.image[p];
+                if !v.is_finite() {
+                    continue;
+                }
+                fl |= im.flags[p];
+                let var = im.variance[p];
+                if !(var.is_finite() && var > 0.0) || im.flags[p] & mask != 0 {
+                    continue;
+                }
+                let w = 1.0 / f64::from(var);
+                num += w * f64::from(v);
+                wsum += w;
+                n = n.saturating_add(1);
+            }
+            row.flags[x] = fl;
+            if wsum > 0.0 {
+                row.image[x] = (num / wsum) as f32;
+                row.variance[x] = (1.0 / wsum) as f32;
+                row.n_contrib[x] = n;
+            }
+        }
+        row
+    };
+    let rows: Vec<StackRow> = if ny * nx * ims.len() >= STACK_PAR_MIN {
+        (0..ny).into_par_iter().map(render).collect()
+    } else {
+        (0..ny).map(render).collect()
+    };
+    assemble_rows(grid, rows)
+}
+
+/// [`stack_images`] with generic `Array2` indexing (any layout).
+fn stack_scalar(images: &[&ScienceImage], grid: OutputGrid, opts: &StackOptions) -> ScienceImage {
     let (ny, nx) = (grid.ny, grid.nx);
     let mut out = ScienceImage::blank(grid);
     for y in 0..ny {
@@ -161,11 +255,43 @@ pub fn stack_images(
             }
         }
     }
-    out.detector = common_detector(images);
-    out.wavelength_um = mean_f64(images.iter().map(|im| im.wavelength_um));
-    out.mjd = mean_opt(images.iter().map(|im| im.mjd));
-    out.zodi_subtracted = images.iter().all(|im| im.zodi_subtracted);
-    Ok(out)
+    out
+}
+
+/// Assemble a `ScienceImage` from per-row results (metadata left at the
+/// blank defaults; the caller fills it).
+fn assemble_rows(grid: OutputGrid, rows: Vec<StackRow>) -> ScienceImage {
+    let mut out = ScienceImage::blank(grid);
+    let (ny, nx) = (grid.ny, grid.nx);
+    if let (Some(img), Some(var), Some(flg), Some(nn)) = (
+        out.image.as_slice_mut(),
+        out.variance.as_slice_mut(),
+        out.flags.as_slice_mut(),
+        out.n_contrib.as_slice_mut(),
+    ) {
+        for (y, r) in rows.iter().enumerate() {
+            img[y * nx..(y + 1) * nx].copy_from_slice(&r.image);
+            var[y * nx..(y + 1) * nx].copy_from_slice(&r.variance);
+            flg[y * nx..(y + 1) * nx].copy_from_slice(&r.flags);
+            nn[y * nx..(y + 1) * nx].copy_from_slice(&r.n_contrib);
+        }
+    } else {
+        for (y, r) in rows.iter().enumerate().take(ny) {
+            for (x, v) in r.image.iter().enumerate() {
+                out.image[[y, x]] = *v;
+            }
+            for (x, v) in r.variance.iter().enumerate() {
+                out.variance[[y, x]] = *v;
+            }
+            for (x, v) in r.flags.iter().enumerate() {
+                out.flags[[y, x]] = *v;
+            }
+            for (x, v) in r.n_contrib.iter().enumerate() {
+                out.n_contrib[[y, x]] = *v;
+            }
+        }
+    }
+    out
 }
 
 /// Result of [`stack_detectors`].
