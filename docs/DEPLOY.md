@@ -16,6 +16,13 @@ or a plain VPS with Docker.
   already pulled (2026-11-15).
 - Exposed port: `8080` (override with `PORT`). Health endpoint:
   `GET /api/v1/health`.
+- Backend release profile (`backend/Cargo.toml`): `lto = "fat"`,
+  `codegen-units = 1`, `strip = true` — the build stage compiles with it,
+  so the cargo step takes more time and RAM than a default release build;
+  the shipped binary is stripped (measured 8.1 MB).
+- Measured runtime memory: ~153 MiB peak RSS while serving three
+  concurrent 60-frame requests (2026-11-15), within a 384 MiB limit —
+  size small-host plans accordingly.
 
 ## Build and run locally
 
@@ -124,7 +131,7 @@ variable below is read by `backend/src/config.rs` or
 | `S3_MAX_CONCURRENCY` | `16` | Parallel byte-range requests to the S3 mirror; separate from `IRSA_MAX_CONCURRENCY` (AWS is not the shared IRSA service). |
 | `CACHE_DIR` | `/data/cache` in the image (unset in source = memory only) | Persistent cache directory: SIA results and cutouts survive restarts. The image bakes the five presets here (see "Baked preset cache"). Compose mounts the `spherex-cache` volume at `/data/cache`; the container user is uid 999 and must be able to write it (see "Cache volume" below). |
 | `MAX_FRAMES` | `60` | Upper bound on frames per `/api/v1/frames` (contract max 60). |
-| `MAX_CACHE_MB` | `200` | In-memory cutout cache cap, MiB. |
+| `MAX_CACHE_MB` | `200` | In-memory cutout cache cap, MiB. Also sizes the serialized `/api/v1/frames` response cache at one quarter of this value, clamped to 4–64 MiB. |
 | `SEARCH_DISK_TTL_SECS` | `86400` | Freshness window for on-disk SIA/TAP search bodies, seconds (counted from file mtime). Older bodies are refetched upstream; a transient refetch failure serves the stale body (keeps the baked cache answering while IRSA is unreachable). `0` = always try upstream first. |
 
 `PORT`, `STATIC_DIR`, `RUST_LOG`, `MAX_CACHE_MB`, `IRSA_MAX_CONCURRENCY` and

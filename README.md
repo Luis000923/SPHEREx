@@ -252,6 +252,58 @@ Measured by end-to-end QA against the final image
   tests (+ 2 opt-in `@live`), `cargo clippy -D warnings`, `cargo deny`,
   eslint and tsc all clean; 13-check container smoke test.
 
+## Performance (measured)
+
+Every number below is measured, not estimated — backend in a release build
+on 16 cores, frontend in Playwright/Chromium against `vite preview`. Full
+methodology and raw data: handoffs `p1-backend-perf` and
+`p2-frontend-perf` in [`docs/vault/handoffs/`](docs/vault/handoffs/).
+
+**Backend**
+
+| Measurement | Before | After |
+|---|---|---|
+| `/api/v1/frames`, 24 raw frames (zero-latency upstream stub) | 92.3 ms | ~15–17 ms cold (p95 17.1 ms), **0.14 ms warm** |
+| Reproject one cutout to 256², bilinear | 18.7 ms | 2.9 ms (~7×) |
+| Stack 24 frames at 192² | 3.8 ms | 0.5 ms |
+| Stack 60 frames at 192² | 12.3 ms | 1.2 ms (~10×) |
+| 8 concurrent `/frames` requests (distinct targets) | 78 ms wall (1.2×) | 19 ms wall (3.6×) |
+| `spherex-backend` binary | 10.6 MB | 8.1 MB (−24 %) |
+
+- The release profile uses fat LTO, a single codegen unit and symbol
+  stripping. `panic = "abort"` was deliberately rejected: it would make
+  any panicking test abort the whole `cargo test --release` harness.
+- Reprojection hoists per-call WCS invariants, pre-skips output pixels
+  outside the input footprint with a SIP-calibrated margin, samples on
+  contiguous slices and parallelises rows with rayon; `stack`, `diff` and
+  `coadd` got the same slice + rayon treatment. Frozen pre-change
+  implementations pinned to 1e-6 prove the results are unchanged.
+- A byte-weighted process-wide response cache serves identical serialized
+  `/frames` requests in ~0.06 ms; it is sized at `MAX_CACHE_MB` / 4
+  (clamped 4–64 MiB) and never caches bodies computed under a live
+  deadline. Measured peak RSS: ~153 MiB under three concurrent 60-frame
+  requests.
+
+**Frontend**
+
+| Measurement | Before | After |
+|---|---|---|
+| First-load JS, gzip | 86.4 kB (one chunk) | 82.4 kB (`index` + `vendor-react` + `vendor-zod`) |
+| Sourcemaps shipped | ~1.15 MB | 0 |
+| Base64 → float32 decode, 24 frames of 192² | ~59 ms in one blocking task | ~11 ms, sliced ≤ 6 ms, first frame after ~0.5 ms |
+| `history.replaceState` calls, 1.5 s of 30 fps playback | 47 | 2 |
+| Long tasks > 50 ms during load + decode | — | 0 |
+| First frame painted (real path, 24×192²) | only after the whole series decoded | ~174 ms after navigation |
+
+- The spectrum panel and About dialog are now lazy chunks; `vendor-react`
+  and `vendor-zod` are split out so app deploys only invalidate the small
+  `index` chunk (23.4 kB gzip).
+- Playback no longer re-renders React per frame: the rAF loop advances a
+  ref and paints imperatively (canvas, overlay chips, scrubber, aria
+  label), committing to state and the URL once on pause or natural stop.
+  Frames decode progressively, so the first cutout paints while the rest
+  are still decoding.
+
 ## Limitations (honest)
 
 - **WISE 0855 is very faint and its motion is near the pixel-scale
