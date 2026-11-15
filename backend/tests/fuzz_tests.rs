@@ -966,7 +966,8 @@ async fn health_unaffected_by_adjacent_bad_queries() {
 }
 
 // ---------------------------------------------------------------------
-// Bugs found by this battery (kept green via #[ignore]; see handoff)
+// Bugs found by this battery (fixed in b7; regression tests, see
+// handoff)
 // ---------------------------------------------------------------------
 
 /// Contract: `dec`/`ra` must resolve to -90..=90 / [0,360) — violating
