@@ -55,16 +55,23 @@ variable below is read by `backend/src/config.rs` or
 | `RUST_LOG` | `info` | `tracing-subscriber` env filter. |
 | `ALLOWED_ORIGINS` | empty | Comma-separated CORS origins. Empty is strictest: no cross-origin requests. The UI is served same-origin, so CORS is not needed unless the API is called from another site. |
 | `RATE_LIMIT_RPS` | `4` | Per-client API GET rate limit, requests/second (also the burst size). |
-| `OUTPUT_NPIX` | `192` | Side of the square output raster for `/api/v1/frames` (contract max 256). |
+| `OUTPUT_NPIX` | `192` | Cap on the output raster side for `/api/v1/frames`. The API picks the actual side from the cutout plate scale (~4 samples per detector pixel, e.g. 120 px at fov 0.05 deg), clamped to this cap (contract max 256). |
 | `REQUEST_DEADLINE_SECS` | `40` | Total upstream-fetch budget per API request; on expiry the API returns partial frames with `truncated=true`. |
+| `REQUEST_SOFT_DEADLINE_SECS` | `8` | Answer early once at least 2 frames have decoded; the request keeps filling the cache in the background. |
 | `WARM_TARGETS` | unset | Set to `1` (or `true`/`yes`/`on`) to pre-fetch the five preset targets through the cache at startup. Boolean flag, not a target list. |
 | `IRSA_BASE_URL` | `https://irsa.ipac.caltech.edu` | NASA/IPAC IRSA service root. |
 | `IRSA_COLLECTIONS` | `spherex_dr1,spherex_qr3` | Comma-separated collections, in query order. |
 | `IRSA_MAX_CONCURRENCY` | `3` | Max parallel outbound IRSA requests. Keep ≤ 3; IRSA is a shared public service. |
-| `IRSA_TIMEOUT_SECS` | `15` | Timeout for a single IRSA request, seconds. |
+| `IRSA_TIMEOUT_SECS` | `30` | Connect/idle-read timeout for a single IRSA request, seconds. |
+| `IRSA_TOTAL_TIMEOUT_SECS` | `300` | Cap on one whole upstream transfer (headers + body), seconds. |
+| `IRSA_FAILURE_TTL_SECS` | `60` | How long a transient cutout/search failure is remembered before retrying upstream (negative cache), seconds. |
 | `IRSA_MAX_ATTEMPTS` | `3` | Attempts per IRSA request, with exponential backoff on 503/429. |
 | `IRSA_RETRY_BASE_MS` | `400` | Base backoff between IRSA retries, milliseconds. |
 | `IRSA_MAX_BODY_MB` | `64` | Maximum accepted IRSA response body, MiB. |
+| `CUTOUT_SOURCE` | `s3` | Cutout source: `s3` assembles cutouts from byte ranges of the AWS mirror (IBE fallback); `ibe` uses the IRSA IBE cutout service only. |
+| `SPHEREX_S3_BASE_URL` | `https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com` | Base URL of the AWS S3 mirror of the `/ibe/data/spherex/` paths. |
+| `S3_MAX_CONCURRENCY` | `16` | Parallel byte-range requests to the S3 mirror; separate from `IRSA_MAX_CONCURRENCY` (AWS is not the shared IRSA service). |
+| `CACHE_DIR` | unset | Persistent cache directory: SIA results and cutouts survive restarts. Unset = in-memory only. Compose mounts the `spherex-cache` volume at `/data/cache`. |
 | `MAX_FRAMES` | `60` | Upper bound on frames per `/api/v1/frames` (contract max 60). |
 | `MAX_CACHE_MB` | `200` | In-memory cutout cache cap, MiB. |
 

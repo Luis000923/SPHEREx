@@ -18,15 +18,29 @@ services:
       IRSA_BASE_URL: ${IRSA_BASE_URL:-https://irsa.ipac.caltech.edu}
       IRSA_COLLECTIONS: ${IRSA_COLLECTIONS:-spherex_dr1,spherex_qr3}
       IRSA_MAX_CONCURRENCY: ${IRSA_MAX_CONCURRENCY:-3}
-      IRSA_TIMEOUT_SECS: ${IRSA_TIMEOUT_SECS:-15}
+      IRSA_TIMEOUT_SECS: ${IRSA_TIMEOUT_SECS:-30}
+      IRSA_TOTAL_TIMEOUT_SECS: ${IRSA_TOTAL_TIMEOUT_SECS:-300}
+      IRSA_FAILURE_TTL_SECS: ${IRSA_FAILURE_TTL_SECS:-60}
       IRSA_MAX_ATTEMPTS: ${IRSA_MAX_ATTEMPTS:-3}
       IRSA_RETRY_BASE_MS: ${IRSA_RETRY_BASE_MS:-400}
       IRSA_MAX_BODY_MB: ${IRSA_MAX_BODY_MB:-64}
+      CUTOUT_SOURCE: ${CUTOUT_SOURCE:-s3}
+      SPHEREX_S3_BASE_URL: ${SPHEREX_S3_BASE_URL:-https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com}
+      S3_MAX_CONCURRENCY: ${S3_MAX_CONCURRENCY:-16}
+      # Persistent SIA/cutout cache; backed by the spherex-cache volume
+      # below. Set CACHE_DIR= (empty) for an in-memory-only cache.
+      CACHE_DIR: ${CACHE_DIR:-/data/cache}
       MAX_FRAMES: ${MAX_FRAMES:-60}
       MAX_CACHE_MB: ${MAX_CACHE_MB:-200}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-4}
       OUTPUT_NPIX: ${OUTPUT_NPIX:-192}
       REQUEST_DEADLINE_SECS: ${REQUEST_DEADLINE_SECS:-40}
+      REQUEST_SOFT_DEADLINE_SECS: ${REQUEST_SOFT_DEADLINE_SECS:-8}
       WARM_TARGETS: ${WARM_TARGETS:-0}
+    volumes:
+      - spherex-cache:/data/cache
     restart: unless-stopped
+
+volumes:
+  spherex-cache:

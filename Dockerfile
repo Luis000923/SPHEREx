@@ -51,6 +51,11 @@ WORKDIR /app
 COPY --from=backend-build /build/target/release/spherex-backend /app/spherex-backend
 COPY --from=frontend-build /build/dist /app/static
 
+# Persistent cache dir used when CACHE_DIR=/data/cache (see
+# docker-compose.yml); created app-owned so a mounted volume inherits
+# the right ownership. Harmless when CACHE_DIR is unset.
+RUN mkdir -p /data/cache && chown app:app /data/cache
+
 # Defaults; see docs/DEPLOY.md for the full environment reference.
 ENV PORT=8080 \
     STATIC_DIR=/app/static \
