@@ -13,7 +13,6 @@ import {
   useState,
 } from "react";
 import { AppShell } from "./components/layout/AppShell";
-import { AboutDialog } from "./components/about/AboutDialog";
 import { FirstRunHint } from "./components/about/FirstRunHint";
 import { EmbedCredit } from "./components/about/EmbedCredit";
 import type { MenuTarget } from "./components/layout/TargetMenu";
@@ -31,7 +30,6 @@ import {
   TimeLapseCanvas,
   type TransportState,
 } from "./components/viewer/TimeLapseCanvas";
-import { SpectrumPanel } from "./components/spectrum/SpectrumPanel";
 import {
   canvasClickToSpectrum,
   useSpectrum,
@@ -48,7 +46,7 @@ import {
   useFrames,
   type FramesResult,
 } from "./hooks/useFrames";
-import { fetchTargets } from "./lib/api";
+import { fetchTargets, prefetchFrames } from "./lib/api";
 import { parseDecToDeg, parseRaToDeg } from "./lib/coords";
 import { makeMockFramesResponse } from "./lib/mock";
 import {
@@ -71,6 +69,20 @@ const AladinOverlay = lazy(() =>
   })),
 );
 
+// The spectrum panel (chart setup + uPlot loader) and the About dialog
+// are secondary surfaces: they stay out of the main bundle and download
+// on first use.
+const SpectrumPanel = lazy(() =>
+  import("./components/spectrum/SpectrumPanel").then((m) => ({
+    default: m.SpectrumPanel,
+  })),
+);
+const AboutDialog = lazy(() =>
+  import("./components/about/AboutDialog").then((m) => ({
+    default: m.AboutDialog,
+  })),
+);
+
 // ?mock=1 renders the full UI from the synthetic payloads (frames +
 // spectrum) with no backend — used for demos and Playwright.
 function mockModeEnabled(): boolean {
@@ -85,6 +97,24 @@ function mockDelayMs(): number {
   const v = new URLSearchParams(window.location.search).get("mock_delay");
   const n = v === null ? NaN : Number(v);
   return Number.isFinite(n) && n >= 0 ? n : MOCK_PARTIAL_MS;
+}
+
+// ?mock_w, ?mock_h and ?mock_n resize the synthetic series so decode and
+// render can be exercised at real-payload sizes (192x192, 24 frames).
+function mockDims(): { width?: number; height?: number; count?: number } {
+  const out: { width?: number; height?: number; count?: number } = {};
+  if (typeof window === "undefined") return out;
+  const p = new URLSearchParams(window.location.search);
+  const dims: Record<string, "width" | "height" | "count"> = {
+    mock_w: "width",
+    mock_h: "height",
+    mock_n: "count",
+  };
+  for (const [key, field] of Object.entries(dims)) {
+    const v = Number(p.get(key));
+    if (Number.isFinite(v) && v > 0) out[field] = Math.floor(v);
+  }
+  return out;
 }
 
 // Aperture is a spectrum-request parameter; the mock ignores it because the
@@ -385,7 +415,7 @@ export function App(props: AppProps) {
   const mockData = useMemo(
     () =>
       props.mockData ??
-      (mockModeEnabled() ? makeMockFramesResponse() : undefined),
+      (mockModeEnabled() ? makeMockFramesResponse(mockDims()) : undefined),
     [props.mockData],
   );
 
@@ -417,6 +447,23 @@ export function App(props: AppProps) {
   const submitCoords = useCallback(
     (v: CoordinateValue) => setUrl({ ...v, frame: 0 }),
     [setUrl],
+  );
+
+  // Hover/focus on a preset warms the backend cache with the same request
+  // the click will issue, so the follow-up lands on a hot cache. Skipped
+  // in mock mode: there is no backend to warm.
+  const prefetchTarget = useCallback(
+    (t: MenuTarget) => {
+      if (mockData !== undefined) return;
+      prefetchFrames(apiBase, {
+        ra: t.ra,
+        dec: t.dec,
+        fov: t.fov,
+        mode: url.mode,
+        detector: url.det,
+      });
+    },
+    [apiBase, mockData, url.mode, url.det],
   );
 
   const frames = framesResult.frames;
@@ -547,7 +594,12 @@ export function App(props: AppProps) {
       embed={url.embed}
       targets={targets}
       onSelectTarget={submitCoords}
-      headerActions={<AboutDialog />}
+      onPrefetchTarget={prefetchTarget}
+      headerActions={
+        <Suspense fallback={null}>
+          <AboutDialog />
+        </Suspense>
+      }
       notice={<FirstRunHint />}
       credit={<EmbedCredit />}
       search={
@@ -563,7 +615,8 @@ export function App(props: AppProps) {
       panel={panel}
       drawer={
         spec.open ? (
-          <SpectrumPanel
+          <Suspense fallback={null}>
+            <SpectrumPanel
             open={spec.open}
             status={spec.status}
             spectrum={spec.data}
@@ -573,7 +626,8 @@ export function App(props: AppProps) {
             aperturePx={spec.aperturePx}
             onApertureChange={spec.setAperture}
             onClose={spec.close}
-          />
+            />
+          </Suspense>
         ) : null
       }
     >

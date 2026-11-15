@@ -18,6 +18,8 @@ export interface AppShellProps {
   embed: boolean;
   targets: readonly MenuTarget[];
   onSelectTarget: (v: CoordinateValue) => void;
+  /** Warm-up hint for a menu target (hover/focus); optional. */
+  onPrefetchTarget?: (t: MenuTarget) => void;
   search: ReactNode;
   panel: ReactNode;
   /** Docked secondary view (spectrum); null when closed. */
@@ -73,7 +75,11 @@ export function AppShell(props: AppShellProps) {
           SPHEREx Blink
         </h1>
         <div className="app-actions">
-          <TargetMenu targets={targets} onSelect={onSelectTarget} />
+          <TargetMenu
+            targets={targets}
+            onSelect={onSelectTarget}
+            onPrefetch={props.onPrefetchTarget}
+          />
           {props.headerActions ?? null}
         </div>
       </header>

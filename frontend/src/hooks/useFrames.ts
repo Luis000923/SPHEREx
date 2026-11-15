@@ -64,6 +64,47 @@ function decodeAll(res: FramesResponse): DecodedFrame[] {
   return out;
 }
 
+// Time budget per decode slice. Real payloads are up to 24 frames of
+// 192x192 float32 (~196 kB base64 each); decoding them back to back took
+// ~60 ms on the main thread. One frame per slice with a yield whenever a
+// slice overruns keeps every task short.
+const DECODE_SLICE_MS = 6;
+
+function yieldMain(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * Cooperative decode for the network path: decodes frame by frame and
+ * reports each partial result through `onPart`, so the first cutout paints
+ * while the rest are still decoding. Yields to the event loop between
+ * frames whenever a slice exceeds DECODE_SLICE_MS.
+ */
+async function decodeProgressive(
+  res: FramesResponse,
+  alive: () => boolean,
+  onPart: (frames: DecodedFrame[]) => void,
+): Promise<DecodedFrame[]> {
+  const px = res.width * res.height;
+  const out: DecodedFrame[] = [];
+  let sliceStart = Date.now();
+  for (const meta of res.frames) {
+    try {
+      const pixels = base64ToFloat32(meta.data_b64);
+      if (pixels.length === px) out.push({ meta, pixels });
+    } catch {
+      // skip undecodable frames rather than failing the whole series
+    }
+    if (out.length > 0) onPart(out.slice());
+    if (!alive()) return out;
+    if (Date.now() - sliceStart > DECODE_SLICE_MS) {
+      await yieldMain();
+      sliceStart = Date.now();
+    }
+  }
+  return out;
+}
+
 const IDLE_RESULT: FramesResult = {
   status: "idle",
   response: null,
@@ -101,9 +142,28 @@ function startFramesPoll(
 
   const run = () => {
     fetchFrames(apiBase, params, ctrl.signal)
-      .then((res) => {
+      .then(async (res) => {
+        const expected = expectedFrames(
+          params.mode,
+          params.maxFrames,
+          res.total_observations ?? null,
+        );
+        const frames = await decodeProgressive(res, alive, (part) => {
+          // Progressive paint: each decoded frame goes on screen at once.
+          // The final emit below is the only one that settles the polling
+          // flags; intermediates always report pending work.
+          if (!alive()) return;
+          emit({
+            status: "success",
+            response: res,
+            frames: part,
+            error: null,
+            errorCode: null,
+            pending: true,
+            expected,
+          });
+        });
         if (!alive()) return;
-        const frames = decodeAll(res);
         stale = frames.length > lastCount ? 0 : stale + 1;
         lastCount = Math.max(lastCount, frames.length);
         upstreamRetries = 0;
@@ -123,11 +183,6 @@ function startFramesPoll(
         // "stale" is a calm "this is all the archive has" note; the time
         // budget and terminal errors keep the retryable warning.
         const reason = delay === null ? stopReason(input) : null;
-        const expected = expectedFrames(
-          params.mode,
-          params.maxFrames,
-          res.total_observations ?? null,
-        );
         const short = expected !== null && frames.length < expected;
         emit({
           status: "success",
