@@ -12,11 +12,15 @@
 backend/tests
 backend/fixtures
 
-# Docs, contract and ops files are not part of the image
+# Docs, contract and ops files are not part of the image.
+# scripts/ is excluded except the container entrypoint; cache-bake/ is
+# intentionally NOT excluded: the runtime stage bakes it into /data/cache
+# (it may be absent — the Dockerfile tolerates that).
 docs/
 shared/
 .github/
-scripts/
+scripts/*
+!scripts/docker-entrypoint.sh
 *.md
 Dockerfile
 .dockerignore

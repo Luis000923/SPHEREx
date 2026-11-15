@@ -30,6 +30,18 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  supply-chain:
+    name: Supply chain (cargo deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned major tag; no secrets required (advisories fetch the public
+      # RustSec DB over https). Config: backend/deny.toml.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: backend/Cargo.toml
+          command: check licenses advisories bans
+
   frontend:
     name: Frontend (typecheck, test, lint, build)
     runs-on: ubuntu-latest

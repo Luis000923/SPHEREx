@@ -8,8 +8,9 @@ or a plain VPS with Docker.
 - Build context: repository root.
 - Runtime base: `debian:bookworm-slim` + `ca-certificates` + `curl`
   (HEALTHCHECK only), non-root user `app` (uid 999).
-- Measured image size: **139.5 MiB** (146,257,088 bytes,
-  `docker image inspect --format '{{.Size}}'`, 2026-11-15).
+- Measured image size: **177.9 MiB** (186,536,869 bytes) with the baked
+  preset cache (~30 MB on disk), **139.5 MiB** (146,257,088 bytes) without it
+  (`docker image inspect --format '{{.Size}}'`, 2026-11-15).
 - Measured build time: **36 s** clean (`docker build --no-cache`),
   **3 s** fully cached, on a 16-thread i7-13620H with the base images
   already pulled (2026-11-15).
@@ -41,6 +42,40 @@ API JSON routes, the five presets, SPA serving and fallback, gzip on
 `/assets`, `/?mock=1`, security headers, JSON error bodies, non-root user,
 TLS to IRSA, the Docker healthcheck and graceful SIGTERM shutdown. It exits
 non-zero on the first failed check and always removes the container.
+
+## Baked preset cache
+
+`scripts/bake-cache.sh` downloads the data of the five official presets once
+(SIA result bodies plus EPSF-stripped cutouts for the default raw and diff
+selections, and whatever `/api/v1/spectrum` needs at each target position)
+into `cache-bake/` at the repo root:
+
+```sh
+scripts/bake-cache.sh          # ~10-40 min depending on IRSA load
+docker build -t spherex-blink .
+```
+
+The Dockerfile copies `cache-bake/` into the image at `/data/cache` (owned
+by uid 999) and sets `CACHE_DIR=/data/cache` by default, so the shipped
+image answers all five presets — `/api/v1/frames` raw and diff and
+`/api/v1/spectrum` at the target positions — with **zero upstream traffic**.
+Verified with `docker run --network none`; a container with no network at
+all still serves the presets. IRSA stays a live fallback for any other
+position.
+
+`cache-bake/` is not committed to git (see the b17 handoff for the
+commit-vs-CI decision). A build without the directory still works — the
+image simply starts with an empty disk cache.
+
+A mounted volume still works and is additive: a named volume is initialized
+from the image's `/data/cache` on first use (it inherits the baked data),
+and a bind mount replaces it entirely (cold cache, still functional).
+
+Freshness: the backend treats cached SIA bodies as fresh for 24 h counted
+from file mtime (`SEARCH_DISK_TTL`); cutouts never expire. The image
+entrypoint (`scripts/docker-entrypoint.sh`) refreshes mtimes at start and
+hourly, so the baked SIA bodies stay servable for the whole container
+lifetime even when upstream is unreachable.
 
 ## Environment variables
 
@@ -74,12 +109,13 @@ variable below is read by `backend/src/config.rs` or
 | `CUTOUT_SOURCE` | `s3` | Cutout source: `s3` assembles cutouts from byte ranges of the AWS mirror (IBE fallback); `ibe` uses the IRSA IBE cutout service only. |
 | `SPHEREX_S3_BASE_URL` | `https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com` | Base URL of the AWS S3 mirror of the `/ibe/data/spherex/` paths. |
 | `S3_MAX_CONCURRENCY` | `16` | Parallel byte-range requests to the S3 mirror; separate from `IRSA_MAX_CONCURRENCY` (AWS is not the shared IRSA service). |
-| `CACHE_DIR` | unset | Persistent cache directory: SIA results and cutouts survive restarts. Unset = in-memory only. Compose mounts the `spherex-cache` volume at `/data/cache`; the container user is uid 999 and must be able to write it (see "Cache volume" below). |
+| `CACHE_DIR` | `/data/cache` in the image (unset in source = memory only) | Persistent cache directory: SIA results and cutouts survive restarts. The image bakes the five presets here (see "Baked preset cache"). Compose mounts the `spherex-cache` volume at `/data/cache`; the container user is uid 999 and must be able to write it (see "Cache volume" below). |
 | `MAX_FRAMES` | `60` | Upper bound on frames per `/api/v1/frames` (contract max 60). |
 | `MAX_CACHE_MB` | `200` | In-memory cutout cache cap, MiB. |
 
-`PORT`, `STATIC_DIR`, `RUST_LOG`, `MAX_CACHE_MB` and `IRSA_MAX_CONCURRENCY`
-have defaults baked into the image; set the rest per environment as needed.
+`PORT`, `STATIC_DIR`, `RUST_LOG`, `MAX_CACHE_MB`, `IRSA_MAX_CONCURRENCY` and
+`CACHE_DIR` have defaults baked into the image; set the rest per environment
+as needed.
 
 ## Cache volume
 
