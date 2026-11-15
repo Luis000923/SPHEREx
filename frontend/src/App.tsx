@@ -14,6 +14,7 @@ import {
 } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { FirstRunHint } from "./components/about/FirstRunHint";
+import { GitHubLink } from "./components/about/GitHubLink";
 import { EmbedCredit } from "./components/about/EmbedCredit";
 import type { MenuTarget } from "./components/layout/TargetMenu";
 import {
@@ -596,9 +597,12 @@ export function App(props: AppProps) {
       onSelectTarget={submitCoords}
       onPrefetchTarget={prefetchTarget}
       headerActions={
-        <Suspense fallback={null}>
-          <AboutDialog />
-        </Suspense>
+        <>
+          <GitHubLink />
+          <Suspense fallback={null}>
+            <AboutDialog />
+          </Suspense>
+        </>
       }
       notice={<FirstRunHint />}
       credit={<EmbedCredit />}

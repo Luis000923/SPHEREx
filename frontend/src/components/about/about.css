@@ -19,6 +19,9 @@
     color var(--dur-1) var(--ease),
     background-color var(--dur-1) var(--ease);
 }
+a.about-btn {
+  text-decoration: none;
+}
 .about-btn:hover {
   color: var(--fg);
   background: var(--bg-hover);

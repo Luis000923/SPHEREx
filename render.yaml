@@ -1,0 +1,13 @@
+# Render Blueprint: single Docker web service (Rust backend serves the built
+# frontend). Free plan; no secrets needed. See docs/DEPLOY.md.
+services:
+  - type: web
+    name: spherex-blink
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/v1/health
+    autoDeploy: false
+    envVars:
+      - key: WARM_TARGETS
+        value: "0"
