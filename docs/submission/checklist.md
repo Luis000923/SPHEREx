@@ -8,9 +8,11 @@ is allowed until the deadline — submit early, then improve.
 ## Required form fields (all filled, all English)
 
 - [ ] Project Name — text in [`project-page.md`](project-page.md)
-- [ ] High-Level Project Summary — ≤ 120 words (current draft: 101)
+- [ ] High-Level Project Summary — ≤ 120 words (current draft: 108)
 - [ ] Link to Project Demo — public, no login
 - [ ] Link to Final Project — public, no login/permission/registration
+- [ ] Repository link — `TODO(team): <public repo URL>`; must be public
+      before the About dialog link works (see SI_USAGE/D-025 note)
 - [ ] Detailed Project Description
 - [ ] Use of Super Intelligence (SI) — filled, matches `SI_USAGE.md`
 - [ ] NASA Data — at least one NASA resource listed (IRSA SPHEREx) —
@@ -23,7 +25,7 @@ is allowed until the deadline — submit early, then improve.
 - [ ] Agree to Participant Terms / submission guide
 - [ ] Confirm originality **and** that every external resource is listed in
       References — only tick after the References list is complete
-      (`docs/submission/list-deps.sh` output is already pasted)
+      (`list-deps.sh` output is already pasted)
 
 ## Public links actually work
 
@@ -36,6 +38,9 @@ is allowed until the deadline — submit early, then improve.
 ## Hosting / network readiness
 
 - [ ] Deployment is live and stable (`GET /api/v1/health` returns `ok`)
+- [ ] Image built with the baked preset cache (`cache-bake/` present at
+      build time): the five presets serve real data even if IRSA is down —
+      verified with `docker run --network none`
 - [ ] `WARM_TARGETS` set for the five challenge targets, cache warm
 - [ ] **FortiGuard classification requested** for the hosted URL at
       https://www.fortiguard.com/webfilter (suggest "Education" or
@@ -66,7 +71,7 @@ is allowed until the deadline — submit early, then improve.
 - [ ] Repo license file present (Apache-2.0); original content freely
       licensed
 - [ ] All `TODO(team):` and `TODO(measured):` markers in
-      `docs/submission/*.md` resolved — none left in pasted text
+      the `*.md` files in this directory resolved — none left in pasted text
 
 ## Final pass
 
