@@ -16,6 +16,7 @@ mod error;
 mod hdu;
 mod header;
 mod rice;
+pub mod subimage;
 mod table;
 mod wave;
 mod wcs;
@@ -109,6 +110,35 @@ pub struct Frame {
     pub wavelength: WaveMap,
     /// Header metadata (detector, times, flag legend).
     pub header: FrameMeta,
+}
+
+/// Copy of the FITS file `bytes` without the extensions whose `EXTNAME`
+/// matches one of `drop` (case-insensitive). The primary HDU is always
+/// kept; every other HDU is copied verbatim, header and padded data.
+///
+/// Used to keep on-disk cutouts small: a real SPHEREx cutout of a
+/// 0.05 deg field is 3.96 MB, 97% of it the `EPSF` table that the cutout
+/// service copies unchanged and this backend never decodes.
+pub fn strip_extensions(bytes: &[u8], drop: &[&str]) -> Result<Vec<u8>, FitsError> {
+    const BLOCK: usize = 2880;
+    let hdus = hdu::parse_hdus(bytes)?;
+    let mut out = Vec::with_capacity(bytes.len().min(1 << 20));
+    let mut start = 0usize;
+    for h in &hdus {
+        let end = h.data.end.div_ceil(BLOCK) * BLOCK;
+        let keep = h.is_primary
+            || !h
+                .extname()
+                .is_some_and(|n| drop.iter().any(|d| n.eq_ignore_ascii_case(d)));
+        if keep {
+            let avail = end.min(bytes.len());
+            out.extend_from_slice(&bytes[start..avail]);
+            // A final HDU without trailing padding is padded here.
+            out.resize(out.len() + (end - avail), 0);
+        }
+        start = end;
+    }
+    Ok(out)
 }
 
 /// Parse a SPHEREx cutout MEF from `bytes`.

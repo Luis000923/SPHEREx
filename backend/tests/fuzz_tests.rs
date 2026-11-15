@@ -970,11 +970,10 @@ async fn health_unaffected_by_adjacent_bad_queries() {
 // ---------------------------------------------------------------------
 
 /// Contract: `dec`/`ra` must resolve to -90..=90 / [0,360) — violating
-/// values deserve a 400 `invalid_parameter`. `spectrum_params` never
-/// calls `validate_query_params`, so out-of-range coordinates sail
-/// through and surface as `not_found` (404) instead.
+/// values deserve a 400 `invalid_parameter`. Regression: `spectrum_params`
+/// parsed coordinates but never range-checked them, so out-of-range
+/// values surfaced as `not_found` (404) instead.
 #[tokio::test]
-#[ignore = "BUG: /api/v1/spectrum does not range-check ra/dec; out-of-range coordinates return 404 not_found instead of 400 invalid_parameter"]
 async fn spectrum_range_checks_coordinates() {
     let app = app(state(StubSource::happy(4)));
     for uri in [
@@ -991,13 +990,12 @@ async fn spectrum_range_checks_coordinates() {
     }
 }
 
-/// Filtering every cutout out via `detector` yields 200 + empty
-/// `frames` in mode raw, but `group_frames`/`stack_detectors` map an
-/// empty input to `ScienceError::EmptyInput` -> `NotFound` in
-/// diff/coadd/stack. Inconsistent with raw, and the contract's 404
-/// means "no observations at this position", which is false here.
+/// Filtering every cutout out via `detector` must yield 200 + empty
+/// `frames` in every mode. Regression: `group_frames`/`stack_detectors`
+/// mapped the empty input to `ScienceError::EmptyInput` -> `NotFound`
+/// in diff/coadd/stack; the contract's 404 means "no observations at
+/// this position", which is false here.
 #[tokio::test]
-#[ignore = "BUG: /frames?detector=N with no matching cutouts returns 404 in diff/coadd/stack modes (raw returns 200 + empty frames)"]
 async fn detector_filtered_empty_group_is_200_not_404() {
     let app = app(state(StubSource::happy(4))); // all cutouts are detector 3
     for mode in ["diff", "coadd", "stack"] {

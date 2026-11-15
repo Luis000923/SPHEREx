@@ -110,6 +110,22 @@ impl OutputGrid {
         })
     }
 
+    /// Like [`Self::centered`] but with row 0 at the NORTH edge
+    /// (`cd = diag(-fov/npix, -fov/npix)`): a row-major raster drawn top
+    /// to bottom (canvas/WebGL convention, used by the API) then shows
+    /// north up and east left. [`Self::centered`] follows the FITS
+    /// convention (row 0 = south, displayed bottom-up).
+    pub fn centered_north_first(
+        ra_deg: f64,
+        dec_deg: f64,
+        fov_deg: f64,
+        npix: usize,
+    ) -> Result<Self, ScienceError> {
+        let mut g = Self::centered(ra_deg, dec_deg, fov_deg, npix)?;
+        g.wcs.cd[1][1] = -g.wcs.cd[1][1];
+        Ok(g)
+    }
+
     /// Grid copying the linear WCS of a parsed frame over `nx * ny`
     /// pixels (e.g. "same grid as the reference epoch").
     pub fn from_frame(nx: usize, ny: usize, wcs: &SkyWcs) -> Self {

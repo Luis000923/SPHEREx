@@ -28,7 +28,9 @@ mod sia;
 mod votable;
 
 pub use client::{CutoutFrame, FrameSet, IrsaClient, WarmReport, WarmTarget};
-pub use config::{IrsaConfig, DEFAULT_BASE_URL, DEFAULT_COLLECTIONS};
+pub use config::{
+    CutoutSource, IrsaConfig, DEFAULT_BASE_URL, DEFAULT_COLLECTIONS, DEFAULT_S3_BASE_URL,
+};
 pub use error::IrsaError;
 pub use sia::{
     cutout_url, dedup_by_url, em_to_um, fov_to_cutout_size, observations_from_votable,

@@ -115,7 +115,7 @@ fn first_keyword(bytes: &[u8]) -> Option<String> {
 
 /// Declared data size of an HDU in bytes:
 /// `GCOUNT * (PCOUNT + |BITPIX|/8 * prod(NAXISi))`.
-fn declared_data_len(header: &Header) -> Result<usize, FitsError> {
+pub(crate) fn declared_data_len(header: &Header) -> Result<usize, FitsError> {
     let bitpix = header.req_i64("BITPIX")?;
     let elem_bytes: u64 = (bitpix.unsigned_abs()) / 8;
     if elem_bytes == 0 || bitpix.unsigned_abs() % 8 != 0 {

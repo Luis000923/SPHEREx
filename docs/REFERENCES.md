@@ -9,6 +9,7 @@
 - Gaia DR3 via CDS VizieR (catalog overlay, I/355/gaiadr3): https://vizier.cds.unistra.fr/viz-bin/VizieR?-source=I/355
 - AllWISE via CDS VizieR (catalog overlay, II/328/allwise): https://vizier.cds.unistra.fr/viz-bin/VizieR?-source=II/328
 - WiseView (inspiration only): http://byw.tools/wiseview
+- SIMBAD astronomical database, CDS, queried via TAP for preset-target positions, proper motions, parallaxes and bibliographic references: https://simbad.cds.unistra.fr/ (TAP: https://simbad.cds.unistra.fr/simbad/sim-tap; mirror used 2026-11-14: https://simbad.cfa.harvard.edu/simbad/sim-tap)
 
 ## Challenge
 - Planet X and SPHEREx, NASA Space Apps 2026: https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/
@@ -590,3 +591,8 @@ Runtime-loaded third-party components (not in the lockfiles):
 ## Scientific references
 - Molecular ice band positions (H2O 3.05 um, CO2 4.27 um, CO 4.67 um): Boogert, Gerakines & Whittet 2015, ARA&A 53, 541.
 - CH4 nu3 band ~3.32 um: Ehrenfreund & Charnley 2000, ARA&A 38, 427.
+- Preset-target astrometry (position, proper motion, parallax): Gaia Early Data Release 3 (Gaia Collaboration 2021, A&A 649, A1; VizieR I/350/gaiadr3, SIMBAD bibcode 2020yCat.1350....0G) — Barnard's Star, eps Indi B, R Draconis.
+- WISE 0855-0714 astrometry: Kirkpatrick et al. 2021, ApJS 253, 7 (SIMBAD bibcode 2021ApJS..253....7K).
+- RW Aurigae astrometry: van Leeuwen 2007, A&A 474, 653 (Hipparcos new reduction; SIMBAD bibcode 2007A&A...474..653V).
+- eps Indi Ba-Bb binary separation (~1.1 arcsec projected, ~2026): orbit of Dieterich et al. 2018, AJ 156, 103.
+- Epoch-2026.0 propagation: uniform linear 3-D space motion (same formulation as astropy `apply_space_motion`); Astropy Collaboration 2022, ApJ 935, 167: https://www.astropy.org/

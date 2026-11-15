@@ -2,7 +2,8 @@
 //!
 //! Pipeline: validate -> SIA search -> cap at `max_frames` ->
 //! deadline-bounded cutout fetch -> optional `detector` filter ->
-//! reproject every frame onto `OutputGrid::centered(ra, dec, fov, npix)`
+//! reproject every frame onto `OutputGrid::centered_north_first(ra, dec,
+//! fov, npix)` (row 0 = north: top-down display is north up, east left)
 //! -> compose per `mode` (`raw` = reprojected frames, `diff` = each
 //! frame minus the first of its detector x wavelength group via
 //! [`subtract_epochs`], `coadd` = one inverse-variance co-add per group,
@@ -24,9 +25,10 @@ use crate::science::{
 };
 
 use super::dto::{FrameDto, FramesResponseDto, Mode, QueryEcho, WcsDto};
-use super::fetch::fetch_cutouts;
+use super::fetch::{fetch_cutouts, search_until, SearchOutcome};
 use super::params;
 use super::{AppState, FrameSource};
+use tokio::time::Instant;
 
 /// FNV-1a 64-bit constants (same scheme as `Observation::id`).
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -39,11 +41,15 @@ pub(crate) async fn get_frames<S: FrameSource>(
 ) -> Result<Json<FramesResponseDto>, AppError> {
     let p = params::frames_params(&uri)?;
 
-    let observations = state
-        .source
-        .search(p.ra_deg, p.dec_deg, p.fov_deg)
-        .await
-        .map_err(AppError::from)?;
+    // One deadline for the whole request: SIA search + cutouts.
+    let start = Instant::now();
+    let until = start + state.request_deadline;
+    let soft = start + state.soft_deadline.min(state.request_deadline);
+    let observations =
+        match search_until(&state.source, p.ra_deg, p.dec_deg, p.fov_deg, until).await {
+            SearchOutcome::Done(res) => res.map_err(AppError::from)?,
+            SearchOutcome::DeadlineHit => return Err(AppError::UpstreamUnavailable),
+        };
     let total_observations = observations.len();
 
     let cap = p.max_frames.min(state.max_frames_cap);
@@ -54,7 +60,8 @@ pub(crate) async fn get_frames<S: FrameSource>(
         p.ra_deg,
         p.dec_deg,
         p.fov_deg,
-        state.request_deadline,
+        soft,
+        until,
     )
     .await;
     let n_decoded = fetched.frames.len();
@@ -77,7 +84,9 @@ pub(crate) async fn get_frames<S: FrameSource>(
 
     // Reproject every decoded frame onto the output grid; zodi
     // subtraction follows the query flag (contract default false).
-    let grid = OutputGrid::centered(p.ra_deg, p.dec_deg, p.fov_deg, state.output_npix)
+    let npix =
+        output_npix(p.fov_deg, &cutouts, state.output_npix).min(payload_npix_cap(cutouts.len()));
+    let grid = OutputGrid::centered_north_first(p.ra_deg, p.dec_deg, p.fov_deg, npix)
         .map_err(AppError::from)?;
     let ropts = ReprojectOptions {
         interp: Interp::Bilinear,
@@ -124,6 +133,69 @@ pub(crate) async fn get_frames<S: FrameSource>(
     }))
 }
 
+/// Output samples per native detector pixel. SPHEREx pixels are ~6.2"
+/// so a 0.05 deg cutout is only ~29 px across; resampling it onto the
+/// full `OUTPUT_NPIX` (192) grid oversampled it 6.6x and inflated the
+/// payload ~2.7x versus this factor without adding information.
+pub(crate) const OVERSAMPLE: f64 = 4.0;
+
+/// Smallest output raster side, so tiny FOVs still render smoothly.
+pub(crate) const MIN_OUTPUT_NPIX: usize = 32;
+
+/// Documented upper bound for one `/frames` response body, verified by
+/// the security battery (`largest_*_payload_under_20mb`).
+const MAX_RESPONSE_BYTES: usize = 20 * 1024 * 1024;
+
+/// Per-frame JSON overhead (id, WCS, flags, collection, ...) plus the
+/// response envelope, budgeted generously so the bound holds for real
+/// responses, not just the raster bytes.
+const FRAME_OVERHEAD_BYTES: usize = 2048;
+
+/// Largest output raster side that keeps a response of `n` frames under
+/// [`MAX_RESPONSE_BYTES`]. A frame carries `npix*npix` float32 pixels
+/// (4 B each) expanded ~4/3 by base64, so the bound is
+///
+/// `n * (npix^2 * 16/3 + FRAME_OVERHEAD_BYTES) < MAX_RESPONSE_BYTES`
+///
+/// solved for `npix`. With `n` up to `max_frames` (60) this allows
+/// `npix <= 255`, so the production default (`OUTPUT_NPIX` 192) and the
+/// frontend's default requests (24 frames) are never limited; the cap
+/// only binds for large `max_frames x output_npix` products, e.g. the
+/// legal `OUTPUT_NPIX=256` x 60 frames, which would otherwise exceed
+/// 20 MiB.
+fn payload_npix_cap(n: usize) -> usize {
+    if n == 0 {
+        return usize::MAX;
+    }
+    let budget = MAX_RESPONSE_BYTES.saturating_sub(n * FRAME_OVERHEAD_BYTES);
+    let pixels = (budget as f64 / n as f64) * 3.0 / 16.0;
+    pixels.sqrt().max(1.0) as usize
+}
+
+/// Output raster side for `fov_deg`: `OVERSAMPLE` samples per native
+/// pixel (scale read from the first decoded frame's WCS, never
+/// hardcoded), clamped to `[MIN_OUTPUT_NPIX, max_npix]`.
+pub(crate) fn output_npix(fov_deg: f64, cutouts: &[CutoutFrame], max_npix: usize) -> usize {
+    let native = cutouts.iter().find_map(|c| {
+        let cd = c.frame.wcs.cd;
+        let scale = (cd[0][0] * cd[1][1] - cd[0][1] * cd[1][0]).abs().sqrt();
+        (scale.is_finite() && scale > 0.0).then_some(scale)
+    });
+    // Rounded up to a multiple of 8 so the side does not jitter between
+    // requests when the first decoded frame comes from a detector with a
+    // slightly different plate scale (measured 117 vs 118 px).
+    let wanted = match native {
+        Some(scale) => ((fov_deg / scale * OVERSAMPLE) / 8.0).ceil() * 8.0,
+        None => max_npix as f64,
+    };
+    let lo = MIN_OUTPUT_NPIX.min(max_npix);
+    if wanted.is_finite() {
+        (wanted as usize).clamp(lo, max_npix)
+    } else {
+        max_npix
+    }
+}
+
 /// One output raster plus provenance back into `cutouts`.
 struct OutImg {
     /// The raster on the shared output grid.
@@ -144,6 +216,12 @@ fn compose(
     cutouts: &[CutoutFrame],
     images: Vec<ScienceImage>,
 ) -> Result<Vec<OutImg>, AppError> {
+    // A `detector` filter can legitimately empty the set: answer 200
+    // with `frames: []` like raw mode (the contract's 404 means "no
+    // observations at this position", which is not the case here).
+    if cutouts.is_empty() {
+        return Ok(Vec::new());
+    }
     match mode {
         Mode::Raw => Ok(images
             .into_iter()
@@ -173,7 +251,7 @@ fn compose(
                             epoch_member: k,
                             span_times: false,
                         }),
-                        Err(e) => warn!("diff epoch skipped: {e}"),
+                        Err(e) => warn!("diff epoch skipped: {}", science_error_kind(&e)),
                     }
                 }
             }
@@ -195,7 +273,7 @@ fn compose(
                             span_times: true,
                         });
                     }
-                    Err(e) => warn!("coadd group skipped: {e}"),
+                    Err(e) => warn!("coadd group skipped: {}", science_error_kind(&e)),
                 }
             }
             Ok(outs)
@@ -260,6 +338,23 @@ fn group_indices(cutouts: &[CutoutFrame]) -> Result<Vec<(u8, Vec<usize>)>, AppEr
         }
     }
     Ok(out)
+}
+
+/// Log-safe label for a [`ScienceError`]: the variant kind only, never
+/// the message (a `Wcs` error wraps upstream-driven FITS strings).
+fn science_error_kind(e: &crate::science::ScienceError) -> &'static str {
+    use crate::science::ScienceError as S;
+    match e {
+        S::EmptyInput => "empty input",
+        S::ShapeMismatch { .. } => "shape mismatch",
+        S::GridMismatch => "grid mismatch",
+        S::WavelengthMismatch { .. } => "wavelength mismatch",
+        S::UnknownWavelength => "unknown wavelength",
+        S::InvalidDetector { .. } => "invalid detector",
+        S::InvalidAperture { .. } => "invalid aperture",
+        S::InvalidGrid(_) => "invalid grid",
+        S::Wcs(_) => "wcs failure",
+    }
 }
 
 /// Representative epoch of a cutout (mid-exposure MJD).

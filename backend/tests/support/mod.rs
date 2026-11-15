@@ -359,6 +359,9 @@ pub fn state(source: StubSource) -> AppState<StubSource> {
         output_npix: 16,
         max_frames_cap: 60,
         request_deadline: Duration::from_secs(5),
+        // integration-live: answer-early deadline; equal to the hard
+        // deadline here so b6 tests keep their original timing semantics.
+        soft_deadline: Duration::from_secs(5),
         // High enough that the fuzz battery never trips the governor.
         rate_limit_rps: 1_000_000,
     }

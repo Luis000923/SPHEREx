@@ -17,7 +17,8 @@ use super::dto::Mode;
 
 /// Contract defaults for `/frames`.
 const DEFAULT_FOV_DEG: f64 = 0.05;
-const DEFAULT_MAX_FRAMES: usize = 24;
+/// Contract default for `max_frames` (also what `WARM_TARGETS` warms).
+pub const DEFAULT_MAX_FRAMES: usize = 24;
 const MAX_FRAMES_LIMIT: usize = 60;
 
 /// Validated `/api/v1/frames` parameters.
@@ -100,6 +101,9 @@ pub(crate) fn frames_params(uri: &Uri) -> Result<FramesParams, AppError> {
 pub(crate) fn spectrum_params(uri: &Uri) -> Result<SpectrumParams, AppError> {
     let m = query_map(uri)?;
     let (ra, dec) = coordinates(&m)?;
+    // `/spectrum` has no `fov` parameter: range-check `ra`/`dec` against
+    // the fixed cutout FOV the handler always uses.
+    let sky: SkyQuery = validate_query_params(ra, dec, super::spectrum::SPECTRUM_FOV_DEG)?;
     let aperture = opt_bounded(
         &m,
         "aperture_px",
@@ -115,8 +119,8 @@ pub(crate) fn spectrum_params(uri: &Uri) -> Result<SpectrumParams, AppError> {
         ));
     }
     Ok(SpectrumParams {
-        ra_deg: ra,
-        dec_deg: dec,
+        ra_deg: sky.ra_deg,
+        dec_deg: sky.dec_deg,
         aperture_px: aperture as u32,
     })
 }

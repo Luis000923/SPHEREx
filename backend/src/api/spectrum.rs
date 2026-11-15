@@ -13,17 +13,24 @@ use crate::irsa::select_frames;
 use crate::science::extract_spectrum;
 
 use super::dto::{SpectrumPointDto, SpectrumResponseDto};
-use super::fetch::fetch_cutouts;
+use super::fetch::{fetch_cutouts, search_until, SearchOutcome};
 use super::params;
 use super::{AppState, FrameSource};
+use tokio::time::Instant;
 
 /// Cutout side for spectrum queries: the smallest allowed FOV (0.01 deg
 /// ~ 36") still covers the largest aperture (5 px * ~6.15"/px ~ 31").
-const SPECTRUM_FOV_DEG: f64 = 0.01;
+pub(crate) const SPECTRUM_FOV_DEG: f64 = 0.01;
 
 /// Spectrum fluxes are zodi-subtracted: the zodiacal model would
 /// otherwise dominate the aperture mean and drown the source.
 const SPECTRUM_SUBTRACT_ZODI: bool = true;
+
+/// Most cutouts fetched for one spectrum click. Each cutout is a full
+/// upstream file read on IRSA; 60 per click (the frames cap) overran the
+/// deadline under load. 24 epochs still sample 0.75-5 um across all six
+/// detectors.
+pub(crate) const SPECTRUM_MAX_FRAMES: usize = 24;
 
 /// `GET /api/v1/spectrum` handler.
 pub(crate) async fn get_spectrum<S: FrameSource>(
@@ -32,19 +39,24 @@ pub(crate) async fn get_spectrum<S: FrameSource>(
 ) -> Result<Json<SpectrumResponseDto>, AppError> {
     let p = params::spectrum_params(&uri)?;
 
-    let observations = state
-        .source
-        .search(p.ra_deg, p.dec_deg, SPECTRUM_FOV_DEG)
-        .await
-        .map_err(AppError::from)?;
-    let selected = select_frames(&observations, state.max_frames_cap);
+    // One deadline for the whole request: SIA search + cutouts.
+    let start = Instant::now();
+    let until = start + state.request_deadline;
+    let soft = start + state.soft_deadline.min(state.request_deadline);
+    let observations =
+        match search_until(&state.source, p.ra_deg, p.dec_deg, SPECTRUM_FOV_DEG, until).await {
+            SearchOutcome::Done(res) => res.map_err(AppError::from)?,
+            SearchOutcome::DeadlineHit => return Err(AppError::UpstreamUnavailable),
+        };
+    let selected = select_frames(&observations, state.max_frames_cap.min(SPECTRUM_MAX_FRAMES));
     let fetched = fetch_cutouts(
         &state.source,
         selected,
         p.ra_deg,
         p.dec_deg,
         SPECTRUM_FOV_DEG,
-        state.request_deadline,
+        soft,
+        until,
     )
     .await;
     if fetched.frames.is_empty() {

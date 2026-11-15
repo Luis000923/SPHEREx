@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use spherex_backend::api::{build_router, targets, AppState};
+use spherex_backend::api::{build_router, params, targets, AppState};
 use spherex_backend::config::Config;
 use spherex_backend::irsa::IrsaClient;
 
@@ -29,7 +29,9 @@ async fn main() {
         let warm_client = client.clone();
         let targets = targets::warm_targets().expect("invalid preset target table");
         tokio::spawn(async move {
-            let report = warm_client.warm(&targets).await;
+            let report = warm_client
+                .warm_with(&targets, params::DEFAULT_MAX_FRAMES)
+                .await;
             info!(?report, "cache warm-up finished");
         });
     }

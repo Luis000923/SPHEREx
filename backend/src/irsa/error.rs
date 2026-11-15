@@ -64,6 +64,29 @@ pub enum IrsaError {
     Internal(String),
 }
 
+impl IrsaError {
+    /// Compact, log-safe summary: the error kind plus non-sensitive
+    /// fields (HTTP status, attempt count, byte cap, and already
+    /// sanitised `detail` strings). Never includes upstream URL paths
+    /// or query strings — the `Display` impl can carry them inside
+    /// `detail`/`Parse`/`Fits`/`Config` payloads.
+    pub fn log_safe(&self) -> String {
+        match self {
+            Self::InvalidQuery(m) => format!("invalid query: {m}"),
+            Self::Unavailable { attempts, detail } => {
+                format!("unavailable after {attempts} attempt(s): {detail}")
+            }
+            Self::Http { status } => format!("HTTP {status}"),
+            Self::Parse(_) => "unparseable upstream response".to_string(),
+            Self::NoObservations => "no observations".to_string(),
+            Self::BodyTooLarge { limit } => format!("body over {limit}-byte cap"),
+            Self::Fits(_) => "invalid FITS cutout".to_string(),
+            Self::Config(_) => "invalid client configuration".to_string(),
+            Self::Internal(m) => format!("internal error: {m}"),
+        }
+    }
+}
+
 /// A single HTTP attempt outcome, classified for the retry loop.
 #[derive(Debug)]
 pub(crate) enum Attempt {

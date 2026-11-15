@@ -544,3 +544,65 @@ fn real_file_if_provided() {
     eprintln!("lambda at center: {w} +- {bw} um");
     assert!(w.is_finite() && w > 0.5 && w < 5.5, "wavelength {w}");
 }
+
+/// integration-live: on-disk cutout cache drops the unused EPSF table
+/// (97% of a real 0.05 deg cutout) and the result still parses.
+#[test]
+fn strip_extensions_drops_epsf_and_keeps_frame() {
+    let (nx, ny) = (4usize, 4usize);
+    let wcs = vec![
+        card_str("CTYPE1", "RA---TAN"),
+        card_str("CTYPE2", "DEC--TAN"),
+        card_flt("CRPIX1", 2.5),
+        card_flt("CRPIX2", 2.5),
+        card_flt("CRVAL1", 10.0),
+        card_flt("CRVAL2", 0.0),
+        card_flt("CD1_1", -0.001),
+        card_flt("CD2_2", 0.001),
+        card_int("DETECTOR", 2),
+    ];
+    let mut f = primary_hdu();
+    f.extend(image_hdu("IMAGE", -32, nx, ny, &f32_data(&[3.0; 16]), &wcs));
+    f.extend(image_hdu("FLAGS", 32, nx, ny, &i32_data(&[0; 16]), &[]));
+    f.extend(image_hdu(
+        "VARIANCE",
+        -32,
+        nx,
+        ny,
+        &f32_data(&[1.0; 16]),
+        &[],
+    ));
+    f.extend(image_hdu("ZODI", -32, nx, ny, &f32_data(&[0.5; 16]), &[]));
+    f.extend(image_hdu(
+        "EPSF",
+        -32,
+        64,
+        64,
+        &f32_data(&[7.0; 64 * 64]),
+        &[],
+    ));
+    f.extend(wcs_wave_hdu(
+        &[1, 4],
+        &[1, 4],
+        &[1.1, 0.05, 1.2, 0.05, 1.15, 0.05, 1.25, 0.05],
+        &[],
+    ));
+
+    let full = spherex_backend::fits::parse_frame(&f).expect("full parses");
+    assert!(full.header.has_epsf);
+    let small = spherex_backend::fits::strip_extensions(&f, &["epsf"]).expect("strip");
+    assert!(
+        small.len() + 64 * 64 * 4 <= f.len(),
+        "EPSF bytes not removed"
+    );
+    assert_eq!(small.len() % 2880, 0);
+    let frame = spherex_backend::fits::parse_frame(&small).expect("stripped parses");
+    assert!(!frame.header.has_epsf);
+    assert_eq!(frame.image, full.image);
+    assert_eq!(frame.header.detector, Some(2));
+    // Nothing to drop -> byte-identical copy.
+    assert_eq!(
+        spherex_backend::fits::strip_extensions(&f, &[]).expect("noop"),
+        f
+    );
+}

@@ -150,20 +150,24 @@ async fn unknown_api_paths_return_json_404() {
     }
 }
 
-/// `/api/...` outside the mounted `/api/v1` tree currently falls through
-/// to the SPA fallback (`index.html`) instead of a JSON `ErrorBody` 404.
-/// That includes `/api/v1/` (trailing slash): `nest` only matches
-/// `/api/v1` exactly or `/api/v1/<non-empty>`. Keeping this pinned down
-/// as a known deviation; see the handoff.
+/// `/api/...` outside the mounted `/api/v1` tree must get the contract
+/// JSON 404, not the SPA `index.html`. That includes `/api/v1/`
+/// (trailing slash): `nest` only matches `/api/v1` exactly or
+/// `/api/v1/<non-empty>`, so the outer fallback handles it.
 #[tokio::test]
-#[ignore = "BUG: /api/ paths outside /api/v1 (and /api/v1/ itself) are served the SPA index.html, not a JSON 404"]
 async fn other_api_prefixes_also_return_json_404() {
     let dir = TempDir::new("apiver");
     dir.write("index.html", "<html>SPHEREX-INDEX-MARKER</html>");
     let mut st = state(StubSource::happy(0));
     st.static_dir = dir.0.clone();
     let app = app(st);
-    for uri in ["/api/v2/frames?ra=1&dec=0", "/api/", "/api/v9", "/api/v1/"] {
+    for uri in [
+        "/api/v2/frames?ra=1&dec=0",
+        "/api/",
+        "/api",
+        "/api/v9",
+        "/api/v1/",
+    ] {
         let (status, _h, body) = call(&app, &Method::GET, uri, &[])
             .await
             .expect("request builds");
@@ -580,14 +584,15 @@ async fn deadline_partial_results_are_truncated() {
         elapsed < Duration::from_secs(3),
         "deadline did not bound the request: {elapsed:?}"
     );
-    // Aborted stub calls must drain (no leaked in-flight work).
-    for _ in 0..200 {
-        if in_flight.load(Ordering::SeqCst) == 0 {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("in-flight stub calls never drained");
+    // integration-live semantics: fetches still in flight at the deadline
+    // are NOT aborted; they finish in the background (filling the cache
+    // for the next request) and are aborted only after
+    // `api::fetch::BACKGROUND_GRACE`. So right after the response the slow
+    // calls are still running, and the response did not wait for them.
+    assert!(
+        in_flight.load(Ordering::SeqCst) > 0,
+        "slow fetches were aborted at the deadline instead of finishing in the background"
+    );
 }
 
 #[tokio::test]
@@ -617,14 +622,13 @@ async fn deadline_nothing_decoded_is_502_and_cancels() {
     assert_eq!(code, "upstream_unavailable");
     assert!(elapsed < Duration::from_secs(3), "hang: {elapsed:?}");
     assert_eq!(fetch_calls.load(Ordering::SeqCst), 3, "fetches spawned");
-
-    for _ in 0..200 {
-        if in_flight.load(Ordering::SeqCst) == 0 {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("aborted stub calls still in flight");
+    // integration-live: background completion, bounded by
+    // `api::fetch::BACKGROUND_GRACE` (see deadline_partial_results_are_truncated).
+    assert_eq!(
+        in_flight.load(Ordering::SeqCst),
+        3,
+        "in-flight fetches must keep running in the background"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -681,10 +685,10 @@ async fn largest_default_payload_under_20mb() {
 }
 
 /// Same request at the hard ceiling `OUTPUT_NPIX=256` (still a legal
-/// config value) breaches 20 MiB: 60 rasters x 256x256 f32 ≈ 21 MiB
-/// base64. Documented bound is defined at the 192 default.
+/// config value): the request-time raster cap keeps the response under
+/// the documented 20 MiB bound (the side is shrunk, not the frame
+/// count).
 #[tokio::test]
-#[ignore = "BUG: OUTPUT_NPIX=256 x 60 frames produces ~21 MiB, above the 20 MiB documented bound"]
 async fn largest_payload_at_max_npix_also_under_20mb() {
     let mut st = state(StubSource::happy(70));
     st.output_npix = 256; // legal ceiling per config.rs
@@ -698,6 +702,12 @@ async fn largest_payload_at_max_npix_also_under_20mb() {
     .await
     .expect("request builds");
     assert_eq!(status, StatusCode::OK);
+    let mib = body.len() as f64 / (1024.0 * 1024.0);
+    eprintln!(
+        "largest max-npix payload: {:.2} MiB ({} bytes)",
+        mib,
+        body.len()
+    );
     assert!(
         body.len() < 20 * 1024 * 1024,
         "payload exceeds 20 MiB: {} bytes",
@@ -788,13 +798,10 @@ async fn error_bodies_never_echo_input_or_internals() {
     }
 }
 
-/// `fetch_cutouts` logs `warn!("cutout skipped: {e}")`. `IrsaError`'s
-/// Display carries `detail`, which for transport failures embeds the
-/// full upstream URL (reqwest renders it) — including its path and the
-/// `center`/`size` query. This check verifies nothing beyond the host
-/// reaches the logs; it is expected to fail while the leak exists.
+/// Cutout failures are logged via `IrsaError::log_safe()` and transport
+/// details record only error class + host: the upstream URL path/query
+/// that reqwest renders into error strings must never reach the logs.
 #[tokio::test]
-#[ignore = "BUG: warn! in api/fetch.rs logs IrsaError detail containing the full upstream URL (path + query)"]
 async fn logs_do_not_leak_upstream_url_paths() {
     let sink = LogSink::install();
     sink.clear();
@@ -857,6 +864,9 @@ async fn logs_do_not_leak_upstream_url_paths() {
         output_npix: 16,
         max_frames_cap: 60,
         request_deadline: Duration::from_secs(5),
+        // integration-live: answer-early deadline; equal to the hard
+        // deadline here so b6 tests keep their original timing semantics.
+        soft_deadline: Duration::from_secs(5),
         rate_limit_rps: 1_000_000,
     };
     let app = app(st);
