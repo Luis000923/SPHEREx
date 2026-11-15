@@ -100,9 +100,6 @@ async function measure() {
   const canvas = page.getByRole("img", { name: /^Frame \d+ of \d+/ });
   await canvas.waitFor({ state: "attached", timeout: 15000 });
   const firstFrameMs = Date.now() - t0;
-  const aria0 = await canvas.getAttribute("aria-label");
-  const m = /of (\d+)/.exec(aria0 ?? "");
-  const total = m ? Number(m[1]) : 0;
 
   // Wait until the full series decoded (aria label "of N").
   await page.waitForFunction(
