@@ -42,6 +42,12 @@ fn stub_observations(n: usize) -> Vec<Observation> {
 /// Minimal MEF cutout (8x8) at the fixture position, detector 3,
 /// constant image `flux`, constant wavelength map.
 fn cutout(flux: f32, detector: i64, wave_um: f32) -> Vec<u8> {
+    cutout_with(&[flux; 64], detector, wave_um)
+}
+
+/// [`cutout`] with an explicit 8x8 image (FITS order: row 0 = first
+/// row in the file = lowest Dec, since CD2_2 > 0).
+fn cutout_with(image: &[f32], detector: i64, wave_um: f32) -> Vec<u8> {
     let (nx, ny) = (8usize, 8usize);
     let wcs = vec![
         card_str("CTYPE1", "RA---TAN"),
@@ -64,14 +70,7 @@ fn cutout(flux: f32, detector: i64, wave_um: f32) -> Vec<u8> {
         card_str("MSKD0001", "Pixel saturated"),
     ];
     let mut f = primary_hdu();
-    f.extend(image_hdu(
-        "IMAGE",
-        -32,
-        nx,
-        ny,
-        &f32_data(&vec![flux; nx * ny]),
-        &wcs,
-    ));
+    f.extend(image_hdu("IMAGE", -32, nx, ny, &f32_data(image), &wcs));
     f.extend(image_hdu(
         "FLAGS",
         32,
@@ -122,6 +121,13 @@ struct StubSource {
     fail: Option<IrsaError>,
     search_error: Option<IrsaError>,
     fetch_delay: Duration,
+    /// Artificial latency of `search` (deadline tests).
+    search_delay: Duration,
+    /// Observations from this index on (selection order) sleep
+    /// `fetch_delay`; earlier ones answer at once. `None` = all sleep.
+    slow_from: Option<usize>,
+    /// Number of `fetch_cutout` calls that ran to completion.
+    completed: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl StubSource {
@@ -143,6 +149,9 @@ impl StubSource {
             fail: None,
             search_error: None,
             fetch_delay: Duration::ZERO,
+            search_delay: Duration::ZERO,
+            slow_from: None,
+            completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 }
@@ -170,6 +179,9 @@ impl FrameSource for StubSource {
         _dec_deg: f64,
         _fov_deg: f64,
     ) -> Result<Arc<Vec<Observation>>, IrsaError> {
+        if !self.search_delay.is_zero() {
+            tokio::time::sleep(self.search_delay).await;
+        }
         if let Some(e) = &self.search_error {
             return Err(clone_error(e));
         }
@@ -186,9 +198,20 @@ impl FrameSource for StubSource {
         _dec_deg: f64,
         _fov_deg: f64,
     ) -> Result<Arc<Frame>, IrsaError> {
-        if !self.fetch_delay.is_zero() {
+        let idx = self
+            .observations
+            .iter()
+            .position(|o| o.access_url == observation.access_url)
+            .unwrap_or(0);
+        // select_frames returns newest first: index from the end so
+        // `slow_from` counts in selection order.
+        let order = self.observations.len().saturating_sub(idx + 1);
+        let slow = self.slow_from.is_none_or(|k| order >= k);
+        if slow && !self.fetch_delay.is_zero() {
             tokio::time::sleep(self.fetch_delay).await;
         }
+        self.completed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(e) = &self.fail {
             return Err(clone_error(e));
         }
@@ -228,6 +251,7 @@ fn state(source: StubSource) -> AppState<StubSource> {
         output_npix: 16,
         max_frames_cap: 60,
         request_deadline: Duration::from_secs(5),
+        soft_deadline: Duration::from_secs(5),
         rate_limit_rps: 1000,
     }
 }
@@ -356,12 +380,14 @@ async fn targets_returns_five_presets() {
     assert_eq!(status, StatusCode::OK);
     let arr = v.as_array().expect("array of targets");
     assert_eq!(arr.len(), 5);
+    // Epoch-2026.0 positions (task b11): J2000 catalogue positions
+    // propagated with proper motion; fast movers get fov 0.1.
     for (t, (id, ra, dec, fov)) in arr.iter().zip([
-        ("barnards-star", 269.452083, 4.693333, 0.1),
-        ("epsilon-indi-b", 331.04375, -56.782778, 0.05),
-        ("wise-0855", 133.795129, -7.245147, 0.05),
-        ("rw-aurigae", 76.95625, 30.401389, 0.05),
-        ("r-draconis", 248.1675, 66.754722, 0.05),
+        ("barnards-star", 269.4462583, 4.7683250, 0.1),
+        ("epsilon-indi-b", 331.0966708, -56.8006500, 0.1),
+        ("wise-0855", 133.7597667, -7.2421833, 0.1),
+        ("rw-aurigae", 76.9565875, 30.4012917, 0.05),
+        ("r-draconis", 248.1672333, 66.7550250, 0.05),
     ]) {
         assert_eq!(t["id"], id);
         assert!(t["name"].is_string());
@@ -378,6 +404,104 @@ async fn targets_returns_five_presets() {
             "{id}"
         );
     }
+}
+
+/// Regression (integration-live): the output grid was always
+/// `OUTPUT_NPIX` wide regardless of FOV, oversampling a 0.05 deg cutout
+/// (~29 native px) 6.6x. The side now follows the native pixel scale
+/// (fixture: 0.001 deg/px -> 0.05 deg * 4 / 0.001 = 200 px), capped by
+/// `OUTPUT_NPIX`.
+#[tokio::test]
+async fn frames_grid_follows_native_pixel_scale() {
+    for (fov, cap, expected) in [
+        (0.05, 256, 200),
+        (0.01, 256, 40),
+        (0.05, 64, 64),
+        (0.01, 16, 16),
+    ] {
+        let mut st = state(StubSource::happy(1));
+        st.output_npix = cap;
+        let (status, v) = get(
+            st,
+            &format!("/api/v1/frames?ra=337.878&dec=-5.189&fov={fov}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["width"], expected, "fov={fov} cap={cap}");
+        assert_eq!(v["height"], expected, "fov={fov} cap={cap}");
+        let cd = &v["frames"][0]["wcs"]["cd"];
+        let scale = cd[1][1].as_f64().unwrap_or_default().abs();
+        assert!(
+            (scale * expected as f64 - fov).abs() < 1e-12,
+            "grid must span the FOV"
+        );
+    }
+}
+
+/// Regression (integration-live): the output grid had CD2_2 > 0, so
+/// row 0 of `data_b64` was the SOUTH edge, while the viewer draws row 0
+/// at the top: real images showed north DOWN (a mirror image, not a
+/// rotation). Row 0 must now be north and column 0 east, so a top-down
+/// row-major display is north up, east left.
+#[tokio::test]
+async fn frames_rows_are_north_up_east_left() {
+    // CD1_1 = -0.001: RA grows towards x = 1, so FITS x = 2 is east;
+    // CD2_2 = +0.001: Dec grows with y, so FITS y = 7 is north.
+    let mut img = vec![0.0f32; 64];
+    // FITS (x=2, y=7) -> index (y-1)*8 + (x-1): north-east of centre.
+    img[6 * 8 + 1] = 100.0;
+    let mut s = StubSource::happy(1);
+    let frame = Arc::new(parse_frame(&cutout_with(&img, 3, 1.10)).expect("fixture parses"));
+    for v in s.frames.values_mut() {
+        *v = frame.clone();
+    }
+    let mut st = state(s);
+    st.output_npix = 8;
+    // 0.01 deg on 8 output px: the source (2.5 native px NE of centre)
+    // lands 2 output px NE of centre.
+    let (status, v) = get(st, "/api/v1/frames?ra=337.878&dec=-5.189&fov=0.01&mode=raw").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (w, h) = (
+        v["width"].as_u64().unwrap_or(0) as usize,
+        v["height"].as_u64().unwrap_or(0) as usize,
+    );
+    let f0 = &v["frames"][0];
+    let bytes = STANDARD
+        .decode(f0["data_b64"].as_str().unwrap_or_default())
+        .expect("b64");
+    let px: Vec<f32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect();
+    let (imax, _) =
+        px.iter()
+            .enumerate()
+            .filter(|(_, v)| v.is_finite())
+            .fold(
+                (0, f32::MIN),
+                |acc, (i, &v)| if v > acc.1 { (i, v) } else { acc },
+            );
+    let (row, col) = (imax / w, imax % w);
+    assert!(
+        row < h / 2,
+        "north source drawn in the bottom half (row {row} of {h})"
+    );
+    assert!(
+        col < w / 2,
+        "east source drawn in the right half (col {col} of {w})"
+    );
+    // The WCS must agree with the pixel order: row 0 has the highest Dec.
+    let cd = &f0["wcs"]["cd"];
+    assert!(
+        cd[1][1].as_f64().unwrap_or_default() < 0.0,
+        "cd22 must be < 0 for row 0 = north"
+    );
+    assert!(
+        cd[0][0].as_f64().unwrap_or_default() < 0.0,
+        "cd11 must be < 0 for east left"
+    );
 }
 
 #[tokio::test]
@@ -540,6 +664,73 @@ async fn frames_deadline_returns_partial_or_502() {
     let (status, v) = get(st, "/api/v1/frames?ra=337.878&dec=-5.189").await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(error_code(&v), "upstream_unavailable");
+}
+
+/// Regression (integration-live): the deadline only started after the
+/// SIA search, so a slow search plus a full cutout deadline overran the
+/// backstop and the client got a bare 408 after 55 s. The search now
+/// counts against the same deadline and the answer is a JSON 502.
+#[tokio::test]
+async fn frames_deadline_includes_search() {
+    let mut s = StubSource::happy(2);
+    s.search_delay = Duration::from_secs(60);
+    let mut st = state(s);
+    st.request_deadline = Duration::from_millis(100);
+    let t0 = std::time::Instant::now();
+    let (status, v) = get(st, "/api/v1/frames?ra=337.878&dec=-5.189").await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{v}");
+    assert_eq!(error_code(&v), "upstream_unavailable");
+    assert!(
+        t0.elapsed() < Duration::from_secs(2),
+        "search ignored the deadline: {:?}",
+        t0.elapsed()
+    );
+}
+
+/// Regression (integration-live): at the deadline in-flight cutouts were
+/// aborted, throwing away upstream work, so a Retry started from
+/// scratch. They now finish in the background (and fill the cache).
+#[tokio::test]
+async fn deadline_lets_in_flight_cutouts_finish() {
+    let mut s = StubSource::happy(3);
+    s.fetch_delay = Duration::from_millis(300);
+    let completed = s.completed.clone();
+    let mut st = state(s);
+    st.request_deadline = Duration::from_millis(50);
+    let (status, _) = get(st, "/api/v1/frames?ra=337.878&dec=-5.189").await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(
+        completed.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "in-flight cutouts were aborted at the deadline"
+    );
+}
+
+/// Regression (integration-live): with IRSA answering 503 to most
+/// cutouts, every request waited the full 40 s deadline even when most
+/// frames were already cached. Past the soft deadline the API answers
+/// with what it has (>= 2 frames) and keeps fetching in the background.
+#[tokio::test]
+async fn soft_deadline_returns_cached_frames_early() {
+    let mut s = StubSource::happy(4);
+    // Two observations answer instantly ("cached"), two hang.
+    s.slow_from = Some(2);
+    s.fetch_delay = Duration::from_secs(30);
+    let mut st = state(s);
+    st.request_deadline = Duration::from_secs(20);
+    st.soft_deadline = Duration::from_millis(100);
+    let t0 = std::time::Instant::now();
+    let (status, v) = get(st, "/api/v1/frames?ra=337.878&dec=-5.189").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(
+        t0.elapsed() < Duration::from_secs(3),
+        "waited for slow cutouts: {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(v["frames"].as_array().map(Vec::len), Some(2));
+    assert_eq!(v["truncated"], true);
+    assert_eq!(v["total_observations"], 4);
 }
 
 #[tokio::test]

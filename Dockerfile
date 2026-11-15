@@ -1,7 +1,19 @@
 # syntax=docker/dockerfile:1
 # SPHEREx Blink: all-in-one image.
-# Stage 1 builds the Vite/React frontend, stage 2 builds the Rust backend in
-# release mode, stage 3 is a minimal runtime that serves both from one binary.
+# Stage 0 picks up the optional baked preset cache, stage 1 builds the
+# Vite/React frontend, stage 2 builds the Rust backend in release mode,
+# stage 3 is a minimal runtime that serves both from one binary.
+
+########## Stage 0: baked preset cache (optional) ##########
+# scripts/bake-cache.sh fills cache-bake/ with the IRSA data of the five
+# presets (SIA bodies + EPSF-stripped cutouts) so the demo does not depend
+# on IRSA being up. The directory is not necessarily committed, so the copy
+# goes through this stage: `docker build` still works without it and the
+# image just starts with an empty /data/cache.
+FROM debian:bookworm-slim AS baked-cache
+WORKDIR /ctx
+COPY . .
+RUN mkdir -p /out && if [ -d cache-bake ]; then cp -a cache-bake/. /out/; fi
 
 ########## Stage 1: frontend build ##########
 FROM node:22-bookworm-slim AS frontend-build
@@ -51,12 +63,27 @@ WORKDIR /app
 COPY --from=backend-build /build/target/release/spherex-backend /app/spherex-backend
 COPY --from=frontend-build /build/dist /app/static
 
+# Persistent cache dir used when CACHE_DIR=/data/cache (see
+# docker-compose.yml); created app-owned so a mounted volume inherits
+# the right ownership. Harmless when CACHE_DIR is unset.
+RUN mkdir -p /data/cache && chown app:app /data/cache
+
+# Baked preset cache (stage 0): SIA bodies and EPSF-stripped cutouts for
+# the five official targets. Empty when the build context had no
+# cache-bake/ — the app then fills it on demand like before.
+COPY --from=baked-cache --chown=app:app /out/ /data/cache/
+
+# Entrypoint: refreshes the baked files' mtimes (the SIA disk cache counts
+# its 24 h freshness from mtime) then execs the server as PID 1.
+COPY --chmod=0755 scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
+
 # Defaults; see docs/DEPLOY.md for the full environment reference.
 ENV PORT=8080 \
     STATIC_DIR=/app/static \
     RUST_LOG=info \
     MAX_CACHE_MB=200 \
-    IRSA_MAX_CONCURRENCY=3
+    IRSA_MAX_CONCURRENCY=3 \
+    CACHE_DIR=/data/cache
 
 EXPOSE 8080
 USER app
@@ -64,4 +91,4 @@ USER app
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT}/api/v1/health" || exit 1
 
-CMD ["/app/spherex-backend"]
+CMD ["/app/docker-entrypoint.sh"]

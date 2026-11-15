@@ -134,6 +134,9 @@ struct Stub {
     in_flight: AtomicUsize,
     max_in_flight: AtomicUsize,
     ibe_delay: Duration,
+    /// When set, every cutout request answers with this status instead
+    /// of the FITS body (503 = busy, 422 = arrays do not overlap).
+    ibe_status: Option<StatusCode>,
     fits: Vec<u8>,
 }
 
@@ -151,6 +154,9 @@ async fn ibe_handler(State(s): State<Arc<Stub>>) -> Response {
     s.max_in_flight.fetch_max(cur, Ordering::SeqCst);
     tokio::time::sleep(s.ibe_delay).await;
     s.in_flight.fetch_sub(1, Ordering::SeqCst);
+    if let Some(status) = s.ibe_status {
+        return (status, "stub failure").into_response();
+    }
     (StatusCode::OK, s.fits.clone()).into_response()
 }
 
@@ -188,6 +194,7 @@ fn stub_with_urls(urls: Vec<String>, fits: Vec<u8>) -> Stub {
         in_flight: AtomicUsize::new(0),
         max_in_flight: AtomicUsize::new(0),
         ibe_delay: Duration::from_millis(0),
+        ibe_status: None,
         fits,
     }
 }
@@ -469,6 +476,359 @@ async fn cache_avoids_refetching() {
     );
 }
 
+/// Regression (integration-live): a cutout that failed upstream was
+/// re-requested on every API call, so a "cached" `/frames` request
+/// still spent ~30 s retrying the one bad observation. Failures are now
+/// remembered for a short TTL.
+#[tokio::test]
+async fn failed_cutout_is_not_refetched_immediately() {
+    for status in [
+        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    ] {
+        let mut stub = stub_with_urls(vec![], fake_cutout());
+        stub.ibe_status = Some(status);
+        let (base, stub) = start_stub(stub).await;
+        let cfg = test_cfg(&base);
+        let attempts = cfg.max_attempts;
+        let client = IrsaClient::new(cfg).expect("client");
+        let obs = obs_with_url(&format!("{base}/ibe/bad.fits"), 61000.0);
+        for _ in 0..3 {
+            let err = client
+                .fetch_cutout(&obs, 337.8783221, -5.1891588, 0.05)
+                .await
+                .expect_err("upstream always fails");
+            let app: AppError = err.into();
+            assert!(
+                matches!(app, AppError::UpstreamUnavailable | AppError::Internal),
+                "{status}: unexpected mapping {app:?}"
+            );
+        }
+        let expected = if status == StatusCode::SERVICE_UNAVAILABLE {
+            attempts
+        } else {
+            1
+        };
+        assert_eq!(
+            stub.ibe_hits.load(Ordering::SeqCst),
+            expected,
+            "{status}: failed cutout re-requested instead of negative-cached"
+        );
+    }
+}
+
+/// Regression (integration-live): two API requests for the same target
+/// in flight at once downloaded every cutout twice. Concurrent
+/// identical fetches now share one upstream request.
+#[tokio::test]
+async fn concurrent_identical_cutouts_are_coalesced() {
+    let mut stub = stub_with_urls(vec![], fake_cutout());
+    stub.ibe_delay = Duration::from_millis(150);
+    let (base, stub) = start_stub(stub).await;
+    let client = IrsaClient::new(test_cfg(&base)).expect("client");
+    let obs = obs_with_url(&format!("{base}/ibe/same.fits"), 61000.0);
+    let (a, b, c) = tokio::join!(
+        client.fetch_cutout(&obs, 337.8783221, -5.1891588, 0.05),
+        client.fetch_cutout(&obs, 337.8783221, -5.1891588, 0.05),
+        client.fetch_cutout(&obs, 337.8783221, -5.1891588, 0.05),
+    );
+    assert!(a.is_ok() && b.is_ok() && c.is_ok());
+    assert_eq!(
+        stub.ibe_hits.load(Ordering::SeqCst),
+        1,
+        "fetch not coalesced"
+    );
+}
+
+/// integration-live: a real cold cutout costs ~1 min upstream (3.96 MB
+/// at ~60 KB/s), so losing the memory cache on every restart/deploy is
+/// expensive. With `CACHE_DIR` set, a new client (= restarted process)
+/// serves searches and cutouts from disk without touching upstream.
+#[tokio::test]
+async fn disk_cache_survives_restart() {
+    let dir = std::env::temp_dir().join(format!(
+        "spherex-disk-cache-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let (base, stub) = start_stub(stub_with_urls(
+        (0..2).map(|i| format!("{{base}}/ibe/f{i}.fits")).collect(),
+        fake_cutout(),
+    ))
+    .await;
+    let cfg = IrsaConfig {
+        cache_dir: Some(dir.clone()),
+        ..test_cfg(&base)
+    };
+    let first = IrsaClient::new(cfg.clone())
+        .expect("client")
+        .fetch_frames(337.8783221, -5.1891588, 0.05)
+        .await
+        .expect("frames");
+    assert_eq!(first.frames.len(), 2);
+    let (sia, ibe) = (
+        stub.sia_hits.load(Ordering::SeqCst),
+        stub.ibe_hits.load(Ordering::SeqCst),
+    );
+    let second = IrsaClient::new(cfg)
+        .expect("client")
+        .fetch_frames(337.8783221, -5.1891588, 0.05)
+        .await
+        .expect("frames from disk");
+    assert_eq!(second.frames.len(), 2);
+    assert_eq!(second.frames[0].frame.image, first.frames[0].frame.image);
+    assert_eq!(
+        stub.sia_hits.load(Ordering::SeqCst),
+        sia,
+        "search not on disk"
+    );
+    assert_eq!(
+        stub.ibe_hits.load(Ordering::SeqCst),
+        ibe,
+        "cutouts not on disk"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Regression (integration-live): IRSA streamed real 3.96 MB cutouts
+/// at ~60 KB/s (66 s each). The 15/30 s *total* request timeout cut every
+/// one of them mid-body ("error decoding response body"), so nothing
+/// ever decoded. `IRSA_TIMEOUT_SECS` is now an idle-read timeout: a
+/// slow body that keeps arriving completes.
+#[tokio::test]
+async fn slow_but_steady_body_is_not_cut_by_timeout() {
+    async fn slow_body() -> Response {
+        let fits = fake_cutout();
+        let chunks: Vec<Vec<u8>> = fits
+            .chunks(fits.len().div_ceil(6))
+            .map(<[u8]>::to_vec)
+            .collect();
+        let stream = futures_util::stream::unfold(chunks.into_iter(), |mut it| async move {
+            let next = it.next()?;
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            Some((Ok::<_, std::io::Error>(next), it))
+        });
+        axum::body::Body::from_stream(stream).into_response()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let base = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = Router::new().route("/ibe/*rest", get(slow_body));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let cfg = IrsaConfig {
+        // Whole body takes ~720 ms; no single gap exceeds ~120 ms.
+        request_timeout: Duration::from_millis(400),
+        max_attempts: 1,
+        ..test_cfg(&base)
+    };
+    let client = IrsaClient::new(cfg).expect("client");
+    let obs = obs_with_url(&format!("{base}/ibe/slow.fits"), 61000.0);
+    let frame = client
+        .fetch_cutout(&obs, 337.8783221, -5.1891588, 0.05)
+        .await
+        .expect("slow but steady download must complete");
+    assert_eq!(frame.header.detector, Some(3));
+}
+
+/// Synthetic full-frame parent (nx x ny): IMAGE = x + 1000 y,
+/// FLAGS = RICE row-tiles of (7x + y) % 5, constant VARIANCE/ZODI, a
+/// large EPSF that must never be downloaded, and WCS-WAVE.
+fn fake_parent(nx: usize, ny: usize) -> Vec<u8> {
+    let wcs = vec![
+        card_str("CTYPE1", "RA---TAN"),
+        card_str("CTYPE2", "DEC--TAN"),
+        card_flt("CRPIX1", nx as f64 / 2.0 + 0.5),
+        card_flt("CRPIX2", ny as f64 / 2.0 + 0.5),
+        card_flt("CRVAL1", 10.0),
+        card_flt("CRVAL2", 0.0),
+        card_flt("CD1_1", -0.001),
+        card_flt("CD1_2", 0.0),
+        card_flt("CD2_1", 0.0),
+        card_flt("CD2_2", 0.001),
+        card_flt("CRPIX1A", 1.0),
+        card_flt("CRPIX2A", 1.0),
+        card_int("DETECTOR", 4),
+        card_str("BUNIT", "MJy / sr"),
+    ];
+    let image: Vec<f32> = (0..nx * ny)
+        .map(|i| (i % nx) as f32 + 1000.0 * (i / nx) as f32)
+        .collect();
+    let flags: Vec<i32> = (0..nx * ny)
+        .map(|i| ((7 * (i % nx) + i / nx) % 5) as i32)
+        .collect();
+    let mut legend = wcs.clone();
+    legend.push(card_str("MSKN0000", "TRANSIENT"));
+    legend.push(card_str("MSKN0002", "SUR_ERROR"));
+    let mut f = primary_hdu();
+    f.extend(image_hdu("IMAGE", -32, nx, ny, &f32_data(&image), &wcs));
+    f.extend(compressed_image_hdu(
+        "FLAGS",
+        [nx, ny],
+        [nx, 1],
+        &flags,
+        &[],
+        &legend,
+    ));
+    f.extend(image_hdu(
+        "VARIANCE",
+        -32,
+        nx,
+        ny,
+        &f32_data(&vec![0.5; nx * ny]),
+        &wcs,
+    ));
+    f.extend(image_hdu(
+        "ZODI",
+        -32,
+        nx,
+        ny,
+        &f32_data(&vec![0.1; nx * ny]),
+        &wcs,
+    ));
+    f.extend(image_hdu(
+        "EPSF",
+        -32,
+        256,
+        256,
+        &f32_data(&vec![9.0; 256 * 256]),
+        &[],
+    ));
+    f.extend(wcs_wave_hdu(
+        &[1, nx as i32],
+        &[1, ny as i32],
+        &[1.10, 0.05, 1.20, 0.05, 1.15, 0.05, 1.25, 0.05],
+        &[],
+    ));
+    f
+}
+
+struct RangeStub {
+    file: Vec<u8>,
+    bytes_served: AtomicUsize,
+    requests: AtomicUsize,
+}
+
+async fn range_handler(
+    State(s): State<Arc<RangeStub>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    s.requests.fetch_add(1, Ordering::SeqCst);
+    let spec = headers
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("bytes="))
+        .unwrap_or_default()
+        .to_string();
+    if let Some(n) = spec.strip_prefix('-').and_then(|n| n.parse::<usize>().ok()) {
+        let start = s.file.len().saturating_sub(n);
+        s.bytes_served
+            .fetch_add(s.file.len() - start, Ordering::SeqCst);
+        return (StatusCode::PARTIAL_CONTENT, s.file[start..].to_vec()).into_response();
+    }
+    let Some(r) = headers
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("bytes="))
+        .and_then(|v| v.split_once('-'))
+        .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
+    else {
+        return (StatusCode::OK, s.file.clone()).into_response();
+    };
+    if r.0 >= s.file.len() {
+        return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+    }
+    let end = (r.1 + 1).min(s.file.len());
+    s.bytes_served.fetch_add(end - r.0, Ordering::SeqCst);
+    (StatusCode::PARTIAL_CONTENT, s.file[r.0..end].to_vec()).into_response()
+}
+
+/// integration-live: cutouts are rebuilt from S3 byte ranges of the
+/// full-frame file (IBE served 4 MB at ~55 KB/s). The result must equal
+/// the exact sub-array the cutout service would return, FLAGS decoded
+/// from only the needed row-tiles, with the WCS shifted, without
+/// downloading EPSF and without touching IBE.
+#[tokio::test]
+async fn s3_range_cutout_matches_subarray() {
+    let (nx, ny) = (64usize, 48usize);
+    let file = fake_parent(nx, ny);
+    let rs = Arc::new(RangeStub {
+        file: file.clone(),
+        bytes_served: AtomicUsize::new(0),
+        requests: AtomicUsize::new(0),
+    });
+    let (base, stub) = start_stub(stub_with_urls(vec![], fake_cutout())).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let s3 = format!("http://{}", listener.local_addr().expect("addr"));
+    let app = Router::new()
+        .route("/*rest", get(range_handler))
+        .with_state(rs.clone());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let cfg = IrsaConfig {
+        s3_base_url: s3,
+        ..test_cfg(&base)
+    };
+    let client = IrsaClient::new(cfg).expect("client");
+    let obs = obs_with_url(
+        &format!("{base}/ibe/data/spherex/dr1/level2/x/parent.fits"),
+        61000.0,
+    );
+    // 0.011 deg / 0.001 deg/px -> 11 px box centred on CRVAL.
+    let frame = client
+        .fetch_cutout(&obs, 10.0, 0.0, 0.011)
+        .await
+        .expect("cutout from ranges");
+    assert_eq!(stub.ibe_hits.load(Ordering::SeqCst), 0, "fell back to IBE");
+    assert_eq!(frame.image.dim(), (11, 11));
+    // Centre pixel 32.5 rounds to 33 (1-based) -> first column 28 -> x0 = 27;
+    // rows: 24.5 -> 25 -> first row 20 -> y0 = 19.
+    let (x0, y0) = (27usize, 19usize);
+    for y in 0..11 {
+        for x in 0..11 {
+            let (px, py) = (x0 + x, y0 + y);
+            assert_eq!(frame.image[[y, x]], px as f32 + 1000.0 * py as f32);
+            assert_eq!(
+                frame.flags[[y, x]],
+                ((7 * px + py) % 5) as i32,
+                "flags at {x},{y}"
+            );
+        }
+    }
+    // The sky position still maps to the same sky pixel after the shift.
+    let (cx, cy) = frame.wcs.radec_to_pixel(10.0, 0.0).expect("inside");
+    assert!((cx - (32.5 - x0 as f64)).abs() < 1e-9 && (cy - (24.5 - y0 as f64)).abs() < 1e-9);
+    assert!(!frame.header.has_epsf);
+    assert_eq!(frame.header.detector, Some(4));
+    assert!(frame
+        .header
+        .flag_legend
+        .values()
+        .any(|b| b.name == "SUR_ERROR"));
+    let served = rs.bytes_served.load(Ordering::SeqCst);
+    assert!(
+        served < file.len() / 2,
+        "downloaded {served} of {} bytes",
+        file.len()
+    );
+
+    // A box outside the array is a 422, like the cutout service.
+    let err = client
+        .fetch_cutout(&obs, 20.0, 0.0, 0.011)
+        .await
+        .expect_err("no overlap");
+    assert!(matches!(err, IrsaError::Http { status: 422 }), "{err:?}");
+    assert_eq!(stub.ibe_hits.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn max_frames_caps_and_reports_truncation() {
     let urls: Vec<String> = (0..6).map(|i| format!("{{base}}/ibe/f{i}.fits")).collect();
@@ -550,4 +910,64 @@ async fn live_irsa_smoke() {
         }
     }
     assert!(decoded >= 1, "no live cutout decoded");
+}
+
+/// Opt-in live check (`SPHEREX_LIVE=1` plus a reference cutout already
+/// downloaded from IBE): the S3-range cutout must equal the IBE cutout
+/// pixel for pixel. Env: `SPHEREX_IBE_REF` (path to the IBE FITS),
+/// `SPHEREX_REF_URL` (its access_url), `SPHEREX_REF_POS` ("ra,dec,size").
+#[tokio::test]
+async fn live_s3_cutout_matches_ibe_reference() {
+    if std::env::var("SPHEREX_LIVE").ok().as_deref() != Some("1") {
+        return;
+    }
+    let (Ok(path), Ok(url), Ok(pos)) = (
+        std::env::var("SPHEREX_IBE_REF"),
+        std::env::var("SPHEREX_REF_URL"),
+        std::env::var("SPHEREX_REF_POS"),
+    ) else {
+        eprintln!("skipping: SPHEREX_IBE_REF / SPHEREX_REF_URL / SPHEREX_REF_POS not set");
+        return;
+    };
+    let p: Vec<f64> = pos
+        .split(',')
+        .filter_map(|v| v.trim().parse().ok())
+        .collect();
+    assert_eq!(p.len(), 3, "SPHEREX_REF_POS must be ra,dec,size");
+    let reference = spherex_backend::fits::parse_frame(&std::fs::read(&path).expect("read ref"))
+        .expect("parse ref");
+    let cfg = IrsaConfig {
+        // Never fall back to IBE here: the point is the mirror path.
+        base_url: "http://127.0.0.1:9".into(),
+        max_attempts: 2,
+        ..IrsaConfig::default()
+    };
+    let client = IrsaClient::new(cfg).expect("client");
+    let obs = obs_with_url(&url, 61000.0);
+    let t0 = std::time::Instant::now();
+    let got = client
+        .fetch_cutout(&obs, p[0], p[1], p[2])
+        .await
+        .expect("S3 cutout");
+    eprintln!("S3 cutout {:?} in {:?}", got.image.dim(), t0.elapsed());
+    assert_eq!(got.image.dim(), reference.image.dim());
+    let same = |a: &ndarray::Array2<f32>, b: &ndarray::Array2<f32>| {
+        a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits())
+    };
+    assert!(same(&got.image, &reference.image), "IMAGE differs");
+    assert!(same(&got.variance, &reference.variance), "VARIANCE differs");
+    assert!(same(&got.zodi, &reference.zodi), "ZODI differs");
+    assert_eq!(got.flags, reference.flags, "FLAGS differ");
+    assert_eq!(got.wcs.crpix, reference.wcs.crpix);
+    assert_eq!(
+        got.header.flag_legend.len(),
+        reference.header.flag_legend.len()
+    );
+    let (w1, w2) = (
+        got.wavelength.wavelength_at(15.0, 15.0),
+        reference.wavelength.wavelength_at(15.0, 15.0),
+    );
+    assert!((w1 - w2).abs() < 1e-12, "wavelength {w1} vs {w2}");
 }

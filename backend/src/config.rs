@@ -12,8 +12,9 @@
 //! | `ALLOWED_ORIGINS`       | (empty = strictest)     | Comma-separated CORS origins |
 //! | `RATE_LIMIT_RPS`        | `4`                     | Requests/second per client IP |
 //! | `STATIC_DIR`            | `frontend/dist`         | Built frontend directory |
-//! | `OUTPUT_NPIX`           | `192`                   | Output raster side, `<= 256` |
+//! | `OUTPUT_NPIX`           | `192`                   | Output raster side, `<= 256` (see payload bound below) |
 //! | `REQUEST_DEADLINE_SECS` | `40`                    | Total fetch budget per API request |
+//! | `REQUEST_SOFT_DEADLINE_SECS` | `8`                | Answer early once >= 2 frames decoded |
 //! | `WARM_TARGETS`          | unset (`1` enables)     | Pre-fetch presets at startup |
 
 use std::path::PathBuf;
@@ -21,6 +22,10 @@ use std::time::Duration;
 
 use crate::irsa::{IrsaConfig, IrsaError};
 
+/// Default soft deadline: a cold request answers after this many
+/// seconds when at least two frames decoded (measured live: IRSA served
+/// ~0.1-0.3 cutouts/s under load on 2026-11-14).
+pub const DEFAULT_SOFT_DEADLINE_SECS: u64 = 8;
 /// Default listen port.
 pub const DEFAULT_PORT: u16 = 8080;
 /// Default per-IP rate limit (requests/second, also the burst size).
@@ -65,12 +70,22 @@ pub struct Config {
     /// `index.html`.
     pub static_dir: PathBuf,
     /// Side of the square output raster (`OUTPUT_NPIX`, default 192,
-    /// must be `<= 256`).
+    /// must be `<= 256`). The effective raster side is additionally
+    /// capped at request time so the largest `/frames` response stays
+    /// under 20 MiB: with `n` delivered frames each `npix x npix`
+    /// float32 raster is ~`16/3 * npix^2` bytes of base64, so
+    /// `npix <= sqrt((20 MiB - n * overhead) * 3 / (16 * n))`
+    /// (see `api::frames::payload_npix_cap`). At 60 frames that allows
+    /// npix <= 255, so the 192 default (and 24-frame default requests)
+    /// are never limited.
     pub output_npix: usize,
     /// Total upstream-fetch budget per request
     /// (`REQUEST_DEADLINE_SECS`, default 40). On expiry the API returns
     /// whatever is already decoded with `truncated = true`.
     pub request_deadline: Duration,
+    /// After this, answer with what decoded (if >= 2 frames) and let
+    /// the rest finish in the background (`REQUEST_SOFT_DEADLINE_SECS`).
+    pub soft_deadline: Duration,
     /// When `WARM_TARGETS=1`, pre-fetch the five preset targets through
     /// the cache at startup.
     pub warm_targets: bool,
@@ -86,6 +101,7 @@ impl Default for Config {
             static_dir: PathBuf::from(DEFAULT_STATIC_DIR),
             output_npix: DEFAULT_OUTPUT_NPIX,
             request_deadline: Duration::from_secs(DEFAULT_DEADLINE_SECS),
+            soft_deadline: Duration::from_secs(DEFAULT_SOFT_DEADLINE_SECS),
             warm_targets: false,
         }
     }
@@ -124,6 +140,10 @@ impl Config {
         cfg.request_deadline = Duration::from_secs(env_u64(
             "REQUEST_DEADLINE_SECS",
             cfg.request_deadline.as_secs(),
+        )?);
+        cfg.soft_deadline = Duration::from_secs(env_u64(
+            "REQUEST_SOFT_DEADLINE_SECS",
+            cfg.soft_deadline.as_secs(),
         )?);
         cfg.warm_targets = std::env::var("WARM_TARGETS")
             .map(|v| {

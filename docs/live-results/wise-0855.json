@@ -1,0 +1,85 @@
+{
+  "preset": "wise-0855",
+  "served_from": "baked-cache --network none",
+  "raw": {
+    "frames": 22,
+    "total_observations": 280,
+    "truncated": true,
+    "width": 192,
+    "height": 192,
+    "unit": "MJy / sr",
+    "detectors": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "wavelength_um_min": 0.8031770373656132,
+    "wavelength_um_max": 4.633686207170837,
+    "mjd_start_min": 60800.700028,
+    "mjd_end_max": 61174.28855,
+    "collections": [
+      "spherex_dr1"
+    ]
+  },
+  "diff": {
+    "frames": 11,
+    "total_observations": 280,
+    "truncated": true,
+    "width": 192,
+    "height": 192,
+    "unit": "MJy / sr",
+    "detectors": [
+      2
+    ],
+    "wavelength_um_min": 1.1111381712561075,
+    "wavelength_um_max": 1.5897186712182227,
+    "mjd_start_min": 60986.787279,
+    "mjd_end_max": 61174.28855,
+    "collections": [
+      "spherex_dr1"
+    ]
+  },
+  "spectrum": {
+    "points": 21,
+    "detectors": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "wavelength_um_min": 0.8031770373656132,
+    "wavelength_um_max": 4.633686207170837,
+    "mjd_min": 60800.70069465,
+    "mjd_max": 61174.287883944
+  },
+  "spectrum_http": 200,
+  "timings_s": {
+    "raw_first_request": 3.665024,
+    "raw_complete_after": 4.0,
+    "raw_cached_request": 0.511334,
+    "diff_first_request": 3.640731,
+    "diff_complete_after": 4.0,
+    "spectrum_request": 3.090128
+  },
+  "motion": {
+    "expected_motion_arcsec_per_yr": 8.2,
+    "motion_pair_detector": 2,
+    "motion_pair_wavelength_um": [
+      1.6280611779525649,
+      1.5897186712182227
+    ],
+    "motion_pair_mjd": [
+      60801.111073,
+      61174.287218
+    ],
+    "motion_dt_yr": 1.022,
+    "motion_shift_px": 72.29,
+    "measured_shift_arcsec": 135.55,
+    "measured_motion_arcsec_per_yr": 132.67
+  }
+}

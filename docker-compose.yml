@@ -18,15 +18,44 @@ services:
       IRSA_BASE_URL: ${IRSA_BASE_URL:-https://irsa.ipac.caltech.edu}
       IRSA_COLLECTIONS: ${IRSA_COLLECTIONS:-spherex_dr1,spherex_qr3}
       IRSA_MAX_CONCURRENCY: ${IRSA_MAX_CONCURRENCY:-3}
-      IRSA_TIMEOUT_SECS: ${IRSA_TIMEOUT_SECS:-15}
+      IRSA_TIMEOUT_SECS: ${IRSA_TIMEOUT_SECS:-30}
+      IRSA_TOTAL_TIMEOUT_SECS: ${IRSA_TOTAL_TIMEOUT_SECS:-300}
+      IRSA_FAILURE_TTL_SECS: ${IRSA_FAILURE_TTL_SECS:-60}
       IRSA_MAX_ATTEMPTS: ${IRSA_MAX_ATTEMPTS:-3}
       IRSA_RETRY_BASE_MS: ${IRSA_RETRY_BASE_MS:-400}
       IRSA_MAX_BODY_MB: ${IRSA_MAX_BODY_MB:-64}
+      SIA_FALLBACK_TAP: ${SIA_FALLBACK_TAP:-1}
+      IRSA_TAP_URL: ${IRSA_TAP_URL:-https://irsa.ipac.caltech.edu/TAP}
+      # The container HEALTHCHECK polls /api/v1/health every 30 s; keep
+      # this well above that so the idle upstream probe stays rare.
+      HEALTH_PROBE_SECS: ${HEALTH_PROBE_SECS:-300}
+      CUTOUT_SOURCE: ${CUTOUT_SOURCE:-s3}
+      SPHEREX_S3_BASE_URL: ${SPHEREX_S3_BASE_URL:-https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com}
+      S3_MAX_CONCURRENCY: ${S3_MAX_CONCURRENCY:-16}
+      # Persistent SIA/cutout cache; backed by the spherex-cache volume
+      # below. Set CACHE_DIR= (empty) for an in-memory-only cache.
+      CACHE_DIR: ${CACHE_DIR:-/data/cache}
+      # Freshness window for on-disk SIA/TAP search bodies; older bodies
+      # are refetched and a transient refetch failure serves stale.
+      SEARCH_DISK_TTL_SECS: ${SEARCH_DISK_TTL_SECS:-86400}
       MAX_FRAMES: ${MAX_FRAMES:-60}
       MAX_CACHE_MB: ${MAX_CACHE_MB:-200}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-4}
       OUTPUT_NPIX: ${OUTPUT_NPIX:-192}
       REQUEST_DEADLINE_SECS: ${REQUEST_DEADLINE_SECS:-40}
+      REQUEST_SOFT_DEADLINE_SECS: ${REQUEST_SOFT_DEADLINE_SECS:-8}
       WARM_TARGETS: ${WARM_TARGETS:-0}
+    volumes:
+      # The container runs as uid 999 (USER app) and must be able to write
+      # CACHE_DIR. A named volume is initialized from the image's
+      # /data/cache (already owned by app:app), so it works as-is — this is
+      # the recommended approach. For a bind mount instead, create the host
+      # directory with `sudo install -d -o 999 -g 999 /srv/spherex-cache`
+      # and mount it as `/srv/spherex-cache:/data/cache` (or chown it after
+      # the fact). Do not run with `--user` overrides that break uid 999.
+      - spherex-cache:/data/cache
     restart: unless-stopped
+
+volumes:
+  spherex-cache:

@@ -4,8 +4,9 @@ One section per field of the NASA Space Apps 2026 Project Submission page, in
 the form's order. Text between the `--- copy start ---` / `--- copy end ---`
 markers is meant to be pasted into the form verbatim.
 
-`TODO(team):` = the human team must fill this. `TODO(measured):` = fill after
-`integration-live` produces real numbers/screenshots.
+`TODO(team):` = the human team must fill this. All measurements below are
+verified: they come from `../live-results/*.json` (offline probe of the
+final image) and the `b17`/`f10` handoffs in `../vault/handoffs/`.
 
 ---
 
@@ -21,7 +22,7 @@ SPHEREx Blink — a time-lapse window into the SPHEREx all-sky survey
 
 ## High-Level Project Summary
 
-<= 120 words. Current word count: **101** (limit 120) — recount after any
+<= 120 words. Current word count: **107** (limit 120) — recount after any
 edit; count the copy block below only.
 
 --- copy start ---
@@ -32,8 +33,9 @@ the IRSA archive, so moving objects like brown dwarfs and high-proper-motion
 stars jump out visually. Blink, differencing and stacking modes compare
 epochs like-for-like; clicking any pixel assembles a spectrum from all
 exposures that cover it. Every view is a shareable, embeddable URL, and the
-five official challenge targets are built-in presets. Our goal is to make
-Planet-X-style discovery accessible to anyone with a browser.
+five official challenge targets are built-in presets — verified on the real
+archive, where Barnard's Star visibly moves north. Planet-X-style
+discovery, for anyone with a browser.
 --- copy end ---
 
 ---
@@ -59,8 +61,9 @@ Public link, no login/permission/registration.
 --- copy start ---
 TODO(team): <deployed app URL>
 
-Optional embed URL for judges (iframe-ready):
-TODO(team): <deployed app URL>?embed=1&ra=08h55m10.831s&dec=-07d14m42.53s
+Optional embed URL for judges (iframe-ready, Barnard's Star preset —
+its motion is visible across epochs):
+TODO(team): <deployed app URL>?embed=1&ra=17h57m47.102s&dec=%2B04d46m05.97s&fov=0.1
 --- copy end ---
 
 ---
@@ -82,11 +85,16 @@ Worlds planets. The five targets named by the challenge (Barnard's Star,
 Epsilon Indi B, WISE 0855, RW Aurigae, R Draconis) are one-click presets.
 
 **How it works.** For each query the Rust backend runs a SIA2 cone search
-against the IRSA SPHEREx collections, downloads the archive cutouts for each
-epoch, and decodes the multi-extension FITS files with a purpose-built,
-bounds-checked reader (RICE-compressed image tiles, TAN+SIP sky WCS, the
-WCS-WAVE wavelength map and the FLAGS bitmask legend are all parsed from the
-files themselves). A science layer reprojects every cutout onto a common
+against the IRSA SPHEREx collections (with a TAP fallback when SIA fails),
+then downloads the cutouts for each epoch. By default it reads only the
+needed byte ranges of each parent image from the public AWS Open Data
+mirror (`nasa-irsa-spherex`) and rebuilds exactly the IRSA IBE cutout —
+verified bit-identical — because a full IBE cutout is ~4 MB, ~97% of it an
+unused EPSF table; any mirror error falls back to IBE itself. A
+purpose-built, bounds-checked reader decodes the multi-extension FITS
+files (RICE-compressed image tiles, TAN+SIP sky WCS, the WCS-WAVE
+wavelength map and the FLAGS bitmask legend are all parsed from the files
+themselves). A science layer reprojects every cutout onto a common
 north-up grid, then offers four comparison modes — raw, epoch difference,
 inverse-variance co-add and per-detector stack — so each comparison is
 like-for-like (same detector, same wavelength). Clicking any pixel assembles
@@ -95,11 +103,41 @@ brightness per wavelength with uncertainties propagated from the VARIANCE
 extension, plus flag badges read straight from each file's header legend.
 The frontend renders frames on a WebGL2 canvas, with stretch and colormap
 applied in the shader. IRSA is a shared public service, so the backend caps
-concurrency at 3, retries with backoff, caches cutouts in memory, enforces a
-per-request deadline that returns partial results rather than an error, and
-rate-limits clients. Every setting — position, field of view, mode, stretch,
-colormap, playback speed — lives in the URL, so any view can be shared or
-embedded in an iframe.
+concurrency at 3, retries with backoff, caches cutouts in memory and on
+disk, enforces a per-request deadline that returns partial results rather
+than an error, and rate-limits clients. The Docker image additionally ships
+the five presets' data baked into its disk cache, so the demo answers with
+real frames even with no network at all (verified with
+`docker run --network none`). Every setting — position, field of view,
+mode, stretch, colormap, playback speed, detector — lives in the URL, so
+any view can be shared or embedded in an iframe.
+
+**Verified on the real archive (2026-11-15).** All five presets return
+real data offline from the baked image:
+
+| Preset | Frames (raw / diff) | Wavelength range | Detectors | First frame, baked |
+|---|---|---|---|---|
+| Barnard's Star | 24 / 13 (of 390 obs) | 0.74–4.97 µm | D1–D6 | 0.6–1.0 s |
+| Epsilon Indi B | 24 / 15 (of 488 obs) | 0.87–4.76 µm | D1–D6 | 0.6 s |
+| WISE 0855 | 22 / 11 (of 280 obs) | 0.80–4.63 µm | D1–D6 | 0.7–3.9 s |
+| RW Aurigae | 24 / 18 (of 341 obs) | 0.76–4.73 µm | D1–D6 | 0.2–0.3 s |
+| R Draconis | 24 / 14 (of 565 obs) | 0.74–4.84 µm | D1–D6 | 0.2–0.3 s |
+
+In our simple centroid tracking over the real time series, Barnard's
+Star moves north at about 9 arcsec per year (catalogue: 10.4 arcsec per
+year); the uncertainty is about 2 arcsec per year, and the diff mode
+shows the star as a clean bright/dark dipole. Epsilon Indi B is a
+binary brown dwarf (about 1.1 arcsec apart), unresolved at SPHEREx's
+6.15 arcsec/pixel — a one-click preset, but we did not obtain a reliable
+motion measurement. WISE 0855, a Y dwarf, is very faint for SPHEREx
+(3–7σ at best, invisible below ~3 µm) and not detected convincingly in
+raw frames; its motion (about 8 arcsec/yr, about 1.3 native pixels) is
+close to the pixel limit — the preset exists because the challenge asks
+to test it, and the app says so honestly rather than faking a
+detection. The single-container image is 177.9 MiB with the baked
+preset cache, builds in ~36 s, runs as non-root and passes a 13-check
+smoke test. Gates: 194 Rust tests, 250 frontend unit tests, 62
+Playwright end-to-end tests, all green.
 
 **Benefits.** It removes the two barriers between SPHEREx data and the
 public: no FITS handling or archive API knowledge is needed, and results are
@@ -124,30 +162,33 @@ shared by both halves; Docker for one-image deployment.
 ## Use of Super Intelligence (SI)
 
 --- copy start ---
-The team chose the challenge, defined the product idea and requirements,
-verified the results, and made all design and scope decisions. SI tools
-accelerated implementation under human direction:
+TODO(team): the human team must state in its own words how the idea and
+product definition were created; Claude proposed the initial
+problem/solution definition (decision D-001) which the user approved.
+
+SI tools accelerated implementation under human direction and review:
 
 - **Claude Code (Anthropic)** acted as project coordinator: it drafted the
-  OpenAPI contract and task breakdown from the team's problem statement,
-  reviewed every change, and kept project notes. It did not write
-  application code.
-- **Devin (Cognition)** implemented most backend and frontend tasks — FITS
-  parsing, IRSA client, science routines, API routes, viewer, spectrum
-  panel, layout, Docker/CI — each in an isolated git branch reviewed before
+  OpenAPI contract, the task breakdown, helper scripts, the project vault
+  and the documentation drafts, and reviewed every change. It did not
+  write application feature code.
+- **Devin (Cognition)** implemented the backend and frontend tasks —
+  FITS parsing, the IRSA/S3 client, science routines, API routes, the
+  viewer, spectrum panel, layout, Docker/CI, the bake/verify scripts and
+  these submission texts — each in an isolated git branch reviewed before
   merging. Devin commits carry the trailer `Generated-by: Devin
   (SI-assisted)`.
-- **A Claude Opus 5.5 agent (Anthropic)** was delegated one complex
-  cross-cutting task (live-data integration and verification) under the same
-  review gates.
+- **Claude Opus 5.5 agents (Anthropic)** were delegated the complex
+  cross-cutting tasks: live-data integration with the real archive, the
+  visual design pass, and the end-to-end real-data QA. Their commits
+  carry `Generated-by: Claude Opus 5.5 (SI-assisted)`.
 
 SI-generated: essentially all application code, tests, Dockerfile/CI, and
-documentation text (including this submission draft). Not SI-generated: the
-idea of how to solve the challenge, the product definition, all measurements
-reported, and any screenshots/recordings in the demo, which are real output
-of the running application. We used no SI-generated images, audio or video,
-and generated no NASA logos or branding. SI use is also documented in
-`SI_USAGE.md` in the repository.
+documentation text (including this submission draft). Not SI-generated:
+the measurements reported and any screenshots/recordings in the demo,
+which are real output of the running application. We used no SI-generated
+images, audio or video, and generated no NASA logos or branding. SI use
+is documented in `SI_USAGE.md` in the repository.
 --- copy end ---
 
 ---
@@ -157,9 +198,13 @@ and generated no NASA logos or branding. SI use is also documented in
 --- copy start ---
 - **NASA/IPAC Infrared Science Archive (IRSA) — SPHEREx spectral images.**
   Queried live via the IRSA SIA2 service (collections `spherex_dr1` and
-  `spherex_qr3`) and the IRSA cutout service; multi-extension FITS products
-  (IMAGE, VARIANCE, FLAGS, ZODI, WCS-WAVE) are decoded directly.
+  `spherex_qr3`), the IRSA TAP service as a search fallback, and the IRSA
+  IBE cutout service; multi-extension FITS products (IMAGE, VARIANCE,
+  FLAGS, ZODI, WCS-WAVE) are decoded directly.
   https://irsa.ipac.caltech.edu/Missions/spherex.html
+- **AWS Open Data — `nasa-irsa-spherex` bucket.** The same SPHEREx
+  Level-2 files, fetched as HTTP byte ranges (the default cutout source,
+  verified bit-identical to the IBE cutouts; IBE is the fallback).
 - **AllWISE source catalog** (NASA/WISE) — optional overlay markers, queried
   through CDS VizieR (`II/328/allwise`) from the app.
 - **Gaia DR3** (ESA mission, hosted by CDS) — optional overlay markers via
@@ -180,7 +225,8 @@ and generated no NASA logos or branding. SI use is also documented in
 - **AllWISE** via CDS VizieR (`II/328/allwise`):
   https://vizier.cds.unistra.fr/viz-bin/VizieR?-source=II/328
 - **Aladin Lite 3.8.2** (CDS, Université de Strasbourg, LGPL-3.0) — sky
-  overlay and HiPS imagery, loaded from the CDS CDN:
+  overlay and HiPS imagery, loaded from the CDS CDN with a jsDelivr
+  fallback (`aladin-lite@3.8.2` on npm):
   https://aladin.cds.unistra.fr/AladinLite/
 
 **Challenge**
@@ -197,7 +243,7 @@ and generated no NASA logos or branding. SI use is also documented in
 
 **Software dependencies** — every third-party library actually shipped or
 used to build, with version and license. Generated by
-`docs/submission/list-deps.sh` from `backend/Cargo.lock` and
+`list-deps.sh` from `backend/Cargo.lock` and
 `frontend/package-lock.json`.
 
 ### Rust crates (from backend/Cargo.lock)
@@ -437,6 +483,7 @@ used to build, with version and license. Generated by
 
 ### npm packages (from frontend/package-lock.json)
 - @asamuzakjp/css-color 3.2.0 (MIT)
+- @axe-core/playwright 4.14.0 (MPL-2.0)
 - @babel/code-frame 7.29.7 (MIT)
 - @babel/compat-data 7.29.7 (MIT)
 - @babel/core 7.29.13 (MIT)
@@ -507,6 +554,7 @@ used to build, with version and license. Generated by
 - @nodelib/fs.scandir 2.1.5 (MIT)
 - @nodelib/fs.stat 2.0.5 (MIT)
 - @nodelib/fs.walk 1.2.8 (MIT)
+- @playwright/test 1.65.0 (Apache-2.0)
 - @rollup/rollup-android-arm-eabi 4.68.3 (MIT)
 - @rollup/rollup-android-arm64 4.68.3 (MIT)
 - @rollup/rollup-android-x64 4.68.3 (MIT)
@@ -573,6 +621,7 @@ used to build, with version and license. Generated by
 - aria-query 5.3.0 (Apache-2.0)
 - assertion-error 2.0.1 (MIT)
 - asynckit 0.4.0 (MIT)
+- axe-core 4.14.0 (MPL-2.0)
 - balanced-match 1.0.2 (MIT)
 - baseline-browser-mapping 2.11.37 (Apache-2.0)
 - brace-expansion 1.1.22 (MIT)
@@ -702,6 +751,9 @@ used to build, with version and license. Generated by
 - pathval 2.0.1 (MIT)
 - picocolors 1.1.1 (ISC)
 - picomatch 2.3.2 (MIT)
+- playwright 1.65.0 (Apache-2.0)
+- playwright-core 1.65.0 (Apache-2.0)
+- pngjs 7.0.0 (MIT)
 - postcss 8.5.33 (MIT)
 - prelude-ls 1.2.1 (MIT)
 - pretty-format 27.5.1 (MIT)
@@ -769,6 +821,6 @@ used to build, with version and license. Generated by
 
 ---
 
-*Consistency note:* `docs/REFERENCES.md` in the repository carries the same
-list; regenerate with `docs/submission/list-deps.sh` if the lockfiles change
+*Consistency note:* `../REFERENCES.md` in the repository carries the same
+list; regenerate with `list-deps.sh` if the lockfiles change
 before submission.

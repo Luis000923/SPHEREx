@@ -46,7 +46,7 @@
     "/api/v1/frames": {
       "get": {
         "operationId": "getFrames",
-        "description": "Time series of cutouts around (ra, dec), sorted by observation time. In mode diff/coadd, each frame is computed against the first frame of the same detector group (or the pair given by ref_frame).",
+        "description": "Time series of cutouts around (ra, dec), sorted by observation time. In mode diff/coadd, each frame is computed against the first frame of the same detector group (or the pair given by ref_frame). A cold request may return a partial result once enough frames have decoded (soft deadline) while the rest keep downloading in the background; repeating the identical request returns the completed set once the cache is filled. Poll by re-issuing the same request, not by waiting on truncated.",
         "parameters": [
           {
             "name": "ra",
@@ -284,6 +284,36 @@
             "items": {
               "type": "string"
             }
+          },
+          "upstream_ok": {
+            "type": "boolean",
+            "description": "Outcome of the most recently finished upstream contact (optimistic true before any traffic)."
+          },
+          "upstream": {
+            "type": "object",
+            "description": "Per-channel last-success timestamps.",
+            "properties": {
+              "last_sia_ok": {
+                "type": "integer",
+                "nullable": true,
+                "description": "Unix seconds of the last successful SIA2 contact; null when the channel never succeeded since startup."
+              },
+              "last_tap_ok": {
+                "type": "integer",
+                "nullable": true,
+                "description": "Unix seconds of the last successful TAP contact; null when the channel never succeeded since startup."
+              },
+              "last_ibe_ok": {
+                "type": "integer",
+                "nullable": true,
+                "description": "Unix seconds of the last successful IBE cutout contact; null when the channel never succeeded since startup."
+              },
+              "last_s3_ok": {
+                "type": "integer",
+                "nullable": true,
+                "description": "Unix seconds of the last successful S3-mirror contact; null when the channel never succeeded since startup."
+              }
+            }
           }
         }
       },
@@ -414,7 +444,7 @@
           },
           "data_b64": {
             "type": "string",
-            "description": "width*height float32 LE, row-major, base64."
+            "description": "width*height float32 LE, row-major, base64. Row 0 is the NORTH edge of the cutout (north up, east left); the WCS is consistent with this pixel order."
           }
         }
       },
@@ -483,7 +513,7 @@
           },
           "truncated": {
             "type": "boolean",
-            "description": "True if more observations exist than max_frames."
+            "description": "True when fewer frames are returned than the selected observations: either more observations exist than max_frames (the cap alone sets it), or the request deadline/soft deadline stopped the fetch early. Not a polling stop signal."
           },
           "total_observations": {
             "type": "integer"

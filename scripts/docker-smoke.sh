@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build (if needed) and smoke-test the all-in-one image against the real app.
-# Verifies: health JSON, preset targets, SPA serving + fallback, gzip on
-# /assets, security headers, JSON error bodies, non-root user, TLS to IRSA
-# (CA certs), Docker healthcheck and graceful SIGTERM shutdown.
+# Verifies: health JSON (status + upstream_ok), preset targets, SPA serving
+# + fallback, gzip on /assets, security headers, JSON error bodies,
+# non-root user, TLS to IRSA (CA certs), Docker healthcheck and graceful
+# SIGTERM shutdown.
 #
 # Usage: scripts/docker-smoke.sh [image-tag]
 # Exits non-zero on the first failed check; the container is always removed.
@@ -59,7 +60,11 @@ for _ in $(seq 1 30); do
 done
 [ -s "$TMP/body" ] || fail "health endpoint did not answer in 30s"
 grep -q '"status":"ok"' "$TMP/body" || fail "health body: $(cat "$TMP/body")"
-pass "GET /api/v1/health -> 200 JSON status ok"
+grep -q '"upstream_ok":' "$TMP/body" \
+    || fail "health body lacks upstream_ok: $(cat "$TMP/body")"
+grep -q '"upstream":{' "$TMP/body" \
+    || fail "health body lacks upstream block: $(cat "$TMP/body")"
+pass "GET /api/v1/health -> 200 JSON status ok, upstream_ok + upstream present"
 
 code=$(fetch /api/v1/targets)
 expect "$code" 200 "GET /api/v1/targets"

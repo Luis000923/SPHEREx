@@ -2,8 +2,10 @@
 //!
 //! Routes match `shared/openapi-contract.json` exactly:
 //! `GET /api/v1/{health,targets,frames,spectrum}`. Unknown `/api/v1`
-//! paths get a JSON `ErrorBody` 404; everything else falls through to
-//! `STATIC_DIR` with an SPA fallback to `index.html`.
+//! paths get a JSON `ErrorBody` 404, and so does every other `/api`
+//! path (other versions, bare `/api`, the `/api/v1/` trailing slash);
+//! everything else falls through to `STATIC_DIR` with an SPA fallback
+//! to `index.html`.
 //!
 //! Middleware stack (outermost first):
 //! - `Content-Security-Policy: frame-ancestors *` (embedding is a
@@ -21,11 +23,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
-use axum::http::{header, HeaderValue, Method};
+use axum::body::Body;
+use axum::http::{header, HeaderValue, Method, Request};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
+use tower::Service;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::SmartIpKeyExtractor;
 use tower_governor::{GovernorError, GovernorLayer};
@@ -40,18 +43,17 @@ use tracing::warn;
 use crate::config::Config;
 use crate::error::AppError;
 use crate::fits::Frame;
-use crate::irsa::{IrsaClient, IrsaError, Observation};
+use crate::irsa::{IrsaClient, IrsaError, Observation, UpstreamStatus};
 
 pub mod validation;
 
 mod dto;
 mod fetch;
 mod frames;
-mod params;
+mod health;
+pub mod params;
 mod spectrum;
 pub mod targets;
-
-use dto::HealthBody;
 
 /// Upstream frame provider: the slice of
 /// [`crate::irsa::IrsaClient`] the API pipeline needs, abstracted so
@@ -74,6 +76,45 @@ pub trait FrameSource: Send + Sync + 'static {
         dec_deg: f64,
         fov_deg: f64,
     ) -> impl Future<Output = Result<Arc<Frame>, IrsaError>> + Send + '_;
+
+    /// Upstream reachability snapshot for `/api/v1/health` (b15).
+    /// Cheap and non-blocking; the real [`IrsaClient`] may also spawn a
+    /// detached probe at most once per `HEALTH_PROBE_SECS`. The default
+    /// reports "no data yet" (`ok = true`, all timestamps `None`) so
+    /// test stubs need no changes.
+    fn upstream_health(&self) -> UpstreamStatus {
+        UpstreamStatus::default()
+    }
+
+    /// Read-only coverage probe (b18): an already-cached cutout of
+    /// `observation` whose box fully contains `(ra_deg, dec_deg)` plus
+    /// an aperture margin of `margin_deg` degrees on the sky. Cache
+    /// only — never upstream traffic; `None` means "fetch it". Default
+    /// `None` keeps stubs that do not model a coverage cache compiling.
+    fn cached_cutout(
+        &self,
+        observation: Observation,
+        ra_deg: f64,
+        dec_deg: f64,
+        margin_deg: f64,
+    ) -> impl Future<Output = Option<Arc<Frame>>> + Send + '_ {
+        let _ = (observation, ra_deg, dec_deg, margin_deg);
+        async { None }
+    }
+
+    /// Read-only coverage probe (b18): an already-cached observation
+    /// list whose SIA search cone contains `(ra_deg, dec_deg)`. A cone
+    /// containing the point is a superset of "observations covering the
+    /// point" (a covering observation intersects the cone at the point
+    /// itself). Cache only; `None` means "run the search".
+    fn cached_observations(
+        &self,
+        ra_deg: f64,
+        dec_deg: f64,
+    ) -> impl Future<Output = Option<Arc<Vec<Observation>>>> + Send + '_ {
+        let _ = (ra_deg, dec_deg);
+        async { None }
+    }
 }
 
 impl FrameSource for IrsaClient {
@@ -94,6 +135,29 @@ impl FrameSource for IrsaClient {
         fov_deg: f64,
     ) -> Result<Arc<Frame>, IrsaError> {
         IrsaClient::fetch_cutout(self, &observation, ra_deg, dec_deg, fov_deg).await
+    }
+
+    fn upstream_health(&self) -> UpstreamStatus {
+        IrsaClient::upstream_status(self)
+    }
+
+    async fn cached_cutout(
+        &self,
+        observation: Observation,
+        ra_deg: f64,
+        dec_deg: f64,
+        margin_deg: f64,
+    ) -> Option<Arc<Frame>> {
+        self.cached_cutout_covering(&observation, ra_deg, dec_deg, margin_deg)
+            .await
+    }
+
+    async fn cached_observations(
+        &self,
+        ra_deg: f64,
+        dec_deg: f64,
+    ) -> Option<Arc<Vec<Observation>>> {
+        self.cached_observations_covering(ra_deg, dec_deg).await
     }
 }
 
@@ -117,6 +181,9 @@ pub struct AppState<S> {
     pub max_frames_cap: usize,
     /// Total upstream-fetch budget per request (`REQUEST_DEADLINE_SECS`).
     pub request_deadline: Duration,
+    /// Answer early once enough frames decoded
+    /// (`REQUEST_SOFT_DEADLINE_SECS`, see `fetch`).
+    pub soft_deadline: Duration,
     /// Per-IP rate limit, requests/second (`RATE_LIMIT_RPS`).
     pub rate_limit_rps: u32,
 }
@@ -131,6 +198,7 @@ impl<S> Clone for AppState<S> {
             output_npix: self.output_npix,
             max_frames_cap: self.max_frames_cap,
             request_deadline: self.request_deadline,
+            soft_deadline: self.soft_deadline,
             rate_limit_rps: self.rate_limit_rps,
         }
     }
@@ -147,6 +215,7 @@ impl<S> AppState<S> {
             output_npix: cfg.output_npix,
             max_frames_cap: cfg.irsa.max_frames,
             request_deadline: cfg.request_deadline,
+            soft_deadline: cfg.soft_deadline,
             rate_limit_rps: cfg.rate_limit_rps,
         }
     }
@@ -177,7 +246,7 @@ pub fn build_router<S: FrameSource>(state: AppState<S>) -> Router {
     };
 
     let api = Router::new()
-        .route("/health", get(health::<S>))
+        .route("/health", get(health::get::<S>))
         .route("/targets", get(targets::get_targets))
         .route("/frames", get(frames::get_frames::<S>))
         .route("/spectrum", get(spectrum::get_spectrum::<S>))
@@ -208,7 +277,23 @@ pub fn build_router<S: FrameSource>(state: AppState<S>) -> Router {
 
     Router::new()
         .nest("/api/v1", api)
-        .fallback_service(spa)
+        .fallback(move |req: Request<Body>| {
+            let mut spa = spa.clone();
+            async move {
+                // Anything under `/api` outside the mounted `/api/v1`
+                // tree (other versions, bare prefixes, the `/api/v1/`
+                // trailing slash the nest does not match) gets the
+                // contract JSON 404, never the SPA shell.
+                let path = req.uri().path();
+                if path == "/api" || path.starts_with("/api/") {
+                    return AppError::NotFound.into_response();
+                }
+                match spa.call(req).await {
+                    Ok(res) => res.map(Body::new),
+                    Err(_) => AppError::Internal.into_response(),
+                }
+            }
+        })
         // Backstop timeout: the in-handler deadline replies first.
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -221,15 +306,6 @@ pub fn build_router<S: FrameSource>(state: AppState<S>) -> Router {
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static("frame-ancestors *"),
         ))
-}
-
-/// `GET /api/v1/health`.
-async fn health<S: FrameSource>(State(state): State<AppState<S>>) -> Json<HealthBody> {
-    Json(HealthBody {
-        status: "ok",
-        version: env!("CARGO_PKG_VERSION"),
-        collections: (*state.collections).clone(),
-    })
 }
 
 /// JSON 404 for anything under `/api/v1` that matched no route.
