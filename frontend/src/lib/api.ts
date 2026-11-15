@@ -89,6 +89,25 @@ export async function fetchFrames(
   return framesResponseSchema.parse(await res.json());
 }
 
+// Fire-and-forget warm-up deduplicated per URL: hovering or focusing a
+// preset issues the same request the click would, so the backend answers
+// from its cache (or starts filling it) before the click lands. The body
+// is drained so the connection stays reusable; failures are silent by
+// design — the real request retries anyway.
+const prefetchedUrls = new Set<string>();
+
+export function prefetchFrames(apiBase: string, params: FramesParams): void {
+  const base = apiBase.replace(/\/$/, "");
+  const url = `${base}/api/v1/frames?${framesQuery(params)}`;
+  if (prefetchedUrls.has(url)) return;
+  prefetchedUrls.add(url);
+  fetch(url, { priority: "low" } as RequestInit)
+    .then((res) => res.arrayBuffer())
+    .catch(() => {
+      prefetchedUrls.delete(url); // allow a later hover to retry
+    });
+}
+
 export async function fetchTargets(
   apiBase: string,
   signal?: AbortSignal,

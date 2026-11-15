@@ -87,8 +87,14 @@ export class WebGL2Renderer implements FrameRenderer {
   private dataTex: WebGLTexture;
   private cmapTex: WebGLTexture;
   private cmapName: ColormapName | null = null;
+  private uniforms: Record<string, WebGLUniformLocation | null>;
   private w = 0;
   private h = 0;
+  // Allocated size of dataTex; equal w/h means upload() can stream pixels
+  // into the existing texture (texSubImage2D) instead of reallocating it
+  // (texImage2D) on every animation frame.
+  private texW = 0;
+  private texH = 0;
 
   private constructor(
     gl: WebGL2RenderingContext,
@@ -100,6 +106,12 @@ export class WebGL2Renderer implements FrameRenderer {
     this.program = program;
     this.dataTex = dataTex;
     this.cmapTex = cmapTex;
+    // Uniform locations never move for a linked program; look them up
+    // once instead of on every draw.
+    this.uniforms = {};
+    for (const name of ["u_data", "u_cmap", "u_lo", "u_hi", "u_soft", "u_stretch"]) {
+      this.uniforms[name] = gl.getUniformLocation(program, name);
+    }
   }
 
   static create(canvas: HTMLCanvasElement): WebGL2Renderer | null {
@@ -164,9 +176,18 @@ export class WebGL2Renderer implements FrameRenderer {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.dataTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, pixels,
-    );
+    if (width === this.texW && height === this.texH) {
+      // Same size: reuse the existing texture storage.
+      gl.texSubImage2D(
+        gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.FLOAT, pixels,
+      );
+    } else {
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, pixels,
+      );
+      this.texW = width;
+      this.texH = height;
+    }
   }
 
   private uploadCmap(name: ColormapName): void {
@@ -187,18 +208,12 @@ export class WebGL2Renderer implements FrameRenderer {
     gl.viewport(0, 0, this.w, this.h);
     gl.useProgram(this.program);
     this.uploadCmap(params.cmap);
-    gl.uniform1i(gl.getUniformLocation(this.program, "u_data"), 0);
-    gl.uniform1i(gl.getUniformLocation(this.program, "u_cmap"), 1);
-    gl.uniform1f(gl.getUniformLocation(this.program, "u_lo"), params.lo);
-    gl.uniform1f(gl.getUniformLocation(this.program, "u_hi"), params.hi);
-    gl.uniform1f(
-      gl.getUniformLocation(this.program, "u_soft"),
-      ASINH_SOFTENING,
-    );
-    gl.uniform1i(
-      gl.getUniformLocation(this.program, "u_stretch"),
-      STRETCH_INDEX[params.stretch],
-    );
+    gl.uniform1i(this.uniforms["u_data"] ?? null, 0);
+    gl.uniform1i(this.uniforms["u_cmap"] ?? null, 1);
+    gl.uniform1f(this.uniforms["u_lo"] ?? null, params.lo);
+    gl.uniform1f(this.uniforms["u_hi"] ?? null, params.hi);
+    gl.uniform1f(this.uniforms["u_soft"] ?? null, ASINH_SOFTENING);
+    gl.uniform1i(this.uniforms["u_stretch"] ?? null, STRETCH_INDEX[params.stretch]);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.dataTex);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -233,9 +248,17 @@ export class Canvas2DRenderer implements FrameRenderer {
 
   upload(pixels: Float32Array, width: number, height: number): void {
     this.pixels = pixels;
-    this.canvas.width = width;
-    this.canvas.height = height;
-    this.image = this.ctx.createImageData(width, height);
+    // Reuse the ImageData buffer (and leave the canvas size alone) when
+    // the frame size is unchanged; assigning canvas.width clears it.
+    if (
+      this.image === null ||
+      this.image.width !== width ||
+      this.image.height !== height
+    ) {
+      this.canvas.width = width;
+      this.canvas.height = height;
+      this.image = this.ctx.createImageData(width, height);
+    }
   }
 
   draw(params: DrawParams): void {

@@ -16,10 +16,15 @@ export interface MenuTarget {
 export interface TargetMenuProps {
   targets: readonly MenuTarget[];
   onSelect: (v: CoordinateValue) => void;
+  /**
+   * Warm-up hint fired on hover/focus of a menu item so the backend cache
+   * is hot by the time the user clicks. Optional; no-op when absent.
+   */
+  onPrefetch?: (t: MenuTarget) => void;
 }
 
 export function TargetMenu(props: TargetMenuProps) {
-  const { targets, onSelect } = props;
+  const { targets, onSelect, onPrefetch } = props;
   const ref = useRef<HTMLDetailsElement | null>(null);
 
   useEffect(() => {
@@ -69,6 +74,8 @@ export function TargetMenu(props: TargetMenuProps) {
             type="button"
             className="tmenu-item"
             title={t.note ?? `${t.ra} ${t.dec}`}
+            onMouseEnter={() => onPrefetch?.(t)}
+            onFocus={() => onPrefetch?.(t)}
             onClick={() => {
               if (ref.current !== null) ref.current.open = false;
               onSelect({ ra: t.ra, dec: t.dec, fov: t.fov });
