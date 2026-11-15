@@ -1,0 +1,54 @@
+# cargo-deny configuration for the backend dependency tree.
+# Run from the repo root:   cargo deny --manifest-path backend/Cargo.toml check
+# or from backend/:         cargo deny check
+# `advisories` needs network access to fetch the RustSec advisory DB.
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+# Allow-list: the only licenses accepted in the dependency tree.
+# SPDX expressions in Cargo metadata may combine these with OR/AND;
+# each OR branch must contain at least one allowed term (e.g. r-efi's
+# "MIT OR Apache-2.0 OR LGPL-2.1-or-later" passes via MIT/Apache-2.0).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+# Allow-list entries not exercised by the current tree are fine.
+unused-allowed-license = "allow"
+
+[advisories]
+version = 2
+# cargo-deny 0.20: all vulnerability/notice advisories are errors by
+# default; `ignore` is the opt-out for a specific, reviewed advisory.
+unmaintained = "all"
+unsound = "all"
+yanked = "warn"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,6 +1,9 @@
 //! `GET /api/v1/frames` (task b5).
 //!
-//! Pipeline: validate -> SIA search -> cap at `max_frames` ->
+//! Pipeline: validate -> SIA search -> pick at most `max_frames`
+//! epochs (even spread over the survey for `raw`; largest
+//! detector x wavelength buckets for `diff`/`coadd`/`stack`, see
+//! `Observation::select_comparable`) ->
 //! deadline-bounded cutout fetch -> optional `detector` filter ->
 //! reproject every frame onto `OutputGrid::centered_north_first(ra, dec,
 //! fov, npix)` (row 0 = north: top-down display is north up, east left)
@@ -53,7 +56,17 @@ pub(crate) async fn get_frames<S: FrameSource>(
     let total_observations = observations.len();
 
     let cap = p.max_frames.min(state.max_frames_cap);
-    let selected = select_frames(&observations, cap);
+    // The combining modes only merge same-detector, same-wavelength
+    // frames (`group_frames`), so their budget goes to the largest
+    // comparable buckets (b13); `raw` keeps the even spread over the
+    // survey (it is the time-lapse). `total_observations`/`truncated`
+    // meanings are unchanged by which epochs are picked.
+    let selected = match p.mode {
+        Mode::Raw => select_frames(&observations, cap),
+        Mode::Diff | Mode::Coadd | Mode::Stack => {
+            Observation::select_comparable(&observations, cap)
+        }
+    };
     let fetched = fetch_cutouts(
         &state.source,
         selected,

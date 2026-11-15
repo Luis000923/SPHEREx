@@ -20,9 +20,10 @@
 //!   timeouts) for `IRSA_FAILURE_TTL_SECS`. Without this a single bad
 //!   observation was retried on every API call (~30 s each).
 
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use moka::future::Cache;
 use moka::Expiry;
@@ -42,6 +43,7 @@ use super::sia::{
     cutout_url, dedup_by_url, observations_from_votable, pos_parameter, search_radius_deg,
     select_frames, Observation,
 };
+use super::tap;
 
 /// A preset target to pre-warm the cache with (e.g. the five official
 /// challenge targets at startup).
@@ -117,6 +119,107 @@ struct CacheKey {
     kind: KeyKind,
 }
 
+/// Geometry of one cached cutout, kept in the coverage index so a
+/// later request can find "any cutout of this observation covering
+/// this sky point" without scanning the whole cache.
+#[derive(Clone)]
+struct CutoutIndexEntry {
+    /// Cutout centre requested upstream, degrees.
+    ra: f64,
+    /// Cutout centre requested upstream, degrees.
+    dec: f64,
+    /// Requested square side, degrees.
+    size: f64,
+    /// Key whose cache/disk entry holds the decoded frame.
+    key: CacheKey,
+}
+
+/// Geometry of one cached SIA search cone in the coverage index.
+#[derive(Clone)]
+struct SearchIndexEntry {
+    /// Cone centre, degrees.
+    ra: f64,
+    /// Cone centre, degrees.
+    dec: f64,
+    /// Cone radius, degrees.
+    radius: f64,
+    /// Key whose cache/disk entry holds the observation list.
+    key: CacheKey,
+}
+
+/// Secondary index over the decoded-result cache (b18), guarded by a
+/// std mutex (never held across `.await`). `cutouts` maps observation
+/// id hash -> geometries of its cached cutouts; `searches` lists the
+/// cached SIA cones. Lookups are O(entries of that observation /
+/// remembered cones), not a full cache scan per click.
+///
+/// Bounds: at most [`INDEX_MAX_OBS`] distinct observations are tracked
+/// (oldest bucket dropped FIFO), each with at most
+/// [`INDEX_MAX_PER_OBS`] cutout geometries (oldest dropped FIFO), plus
+/// [`INDEX_MAX_SEARCHES`] search cones (oldest dropped FIFO) — in all
+/// `INDEX_MAX_OBS * INDEX_MAX_PER_OBS + INDEX_MAX_SEARCHES` small
+/// entries (~64 B each, well under 10 MiB worst case). Entries are NOT
+/// removed when moka evicts the value they point to: a stale entry
+/// simply degrades to a `cache.get` miss (plus a disk probe when
+/// `CACHE_DIR` is set) before the request falls back to the normal
+/// fetch path.
+#[derive(Default)]
+struct CoverageIndex {
+    /// Observation id hash -> geometries of its cached cutouts.
+    cutouts: HashMap<u64, VecDeque<CutoutIndexEntry>>,
+    /// Insertion order of `cutouts` keys, for the FIFO cap.
+    obs_order: VecDeque<u64>,
+    /// Cached SIA search cones, oldest first.
+    searches: VecDeque<SearchIndexEntry>,
+    /// Whether the `CACHE_DIR` sidecar files were scanned this process.
+    disk_scanned: bool,
+}
+
+/// Distinct observations tracked by the coverage index.
+const INDEX_MAX_OBS: usize = 1024;
+/// Cutout geometries kept per observation.
+const INDEX_MAX_PER_OBS: usize = 64;
+/// SIA search cones remembered.
+const INDEX_MAX_SEARCHES: usize = 512;
+
+impl CoverageIndex {
+    /// Record a cached cutout geometry (deduplicated by cache key).
+    fn insert_cutout(&mut self, obs_hash: u64, entry: CutoutIndexEntry) {
+        if !self.cutouts.contains_key(&obs_hash) {
+            self.obs_order.push_back(obs_hash);
+            while self.obs_order.len() > INDEX_MAX_OBS {
+                if let Some(old) = self.obs_order.pop_front() {
+                    self.cutouts.remove(&old);
+                }
+            }
+        }
+        let bucket = self.cutouts.entry(obs_hash).or_default();
+        if bucket.iter().any(|e| e.key == entry.key) {
+            return;
+        }
+        bucket.push_back(entry);
+        while bucket.len() > INDEX_MAX_PER_OBS {
+            bucket.pop_front();
+        }
+    }
+
+    /// Record a cached SIA cone (deduplicated by cache key).
+    fn insert_search(&mut self, entry: SearchIndexEntry) {
+        if self.searches.iter().any(|e| e.key == entry.key) {
+            return;
+        }
+        self.searches.push_back(entry);
+        while self.searches.len() > INDEX_MAX_SEARCHES {
+            self.searches.pop_front();
+        }
+    }
+
+    /// Total tracked entries (diagnostic for tests).
+    fn len(&self) -> usize {
+        self.searches.len() + self.cutouts.values().map(VecDeque::len).sum::<usize>()
+    }
+}
+
 /// Byte weight of a cached entry (moka weigher). Frames dominate:
 /// 4 arrays * 4 B/px plus a flat allowance for WCS-WAVE/WCS/strings.
 fn entry_weight(e: &Entry) -> u32 {
@@ -180,6 +283,38 @@ impl CacheKey {
             ),
         }
     }
+
+    /// Sidecar file name carrying this key's coverage parameters next
+    /// to its data file (`*.meta`), so a restarted process can rebuild
+    /// the [`CoverageIndex`] from `CACHE_DIR` without reversing the
+    /// hashed data-file names.
+    fn meta_name(&self) -> String {
+        match &self.kind {
+            KeyKind::Search { ra, dec, radius } => format!(
+                "search-{:016x}.meta",
+                fnv64(&format!("m|{}|{ra}|{dec}|{radius}", self.collections))
+            ),
+            KeyKind::Frame { ra, dec, size, obs } => format!(
+                "cutout-{:016x}.meta",
+                fnv64(&format!("f|{}|{ra}|{dec}|{size}|{obs}", self.collections))
+            ),
+        }
+    }
+
+    /// Contents of the sidecar file: `v1 <kind> <collections> <params>`
+    /// with f64 bits in hex so the values round-trip exactly.
+    fn meta_body(&self) -> String {
+        match &self.kind {
+            KeyKind::Search { ra, dec, radius } => format!(
+                "v1 search {} {ra:016x} {dec:016x} {radius:016x}",
+                self.collections
+            ),
+            KeyKind::Frame { ra, dec, size, obs } => format!(
+                "v1 cutout {} {ra:016x} {dec:016x} {size:016x} {obs:016x}",
+                self.collections
+            ),
+        }
+    }
 }
 
 /// Read a disk-cache file; `None` when absent, unreadable or older than
@@ -196,6 +331,8 @@ async fn disk_read(path: &std::path::Path, max_age: Option<Duration>) -> Option<
 
 /// Write a disk-cache file atomically (temp file + rename). Failures
 /// are logged and ignored: the disk cache is an optimisation only.
+/// Used for data files and for the `.meta` sidecars that document each
+/// entry's coverage parameters (see [`CacheKey::meta_name`]).
 async fn disk_write(dir: &std::path::Path, name: &str, bytes: &[u8]) {
     if let Err(e) = tokio::fs::create_dir_all(dir).await {
         warn!("disk cache: cannot create directory: {e}");
@@ -302,6 +439,132 @@ fn unshare(e: &IrsaError) -> IrsaError {
     }
 }
 
+/// Upstream service a request goes to; the health snapshot keeps the
+/// last successful contact per channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Upstream {
+    /// SIA2 cone search (`{base}/SIA`).
+    Sia,
+    /// TAP sync query (`{tap}/sync`), the SIA fallback.
+    Tap,
+    /// IBE cutout download (`{access_url}?center=..&size=..`).
+    Ibe,
+    /// AWS S3 mirror range reads.
+    S3,
+}
+
+/// Point-in-time upstream reachability report for `/api/v1/health`.
+/// All timestamps are Unix seconds; `None` means the channel never
+/// succeeded since startup.
+#[derive(Debug, Clone, Copy)]
+pub struct UpstreamStatus {
+    /// `false` when the most recently finished upstream contact failed
+    /// (5xx, timeout, retries exhausted); `true` on success and also
+    /// before any traffic — optimistic until evidence says otherwise.
+    pub ok: bool,
+    /// Last successful SIA2 contact.
+    pub last_sia_ok: Option<u64>,
+    /// Last successful TAP contact.
+    pub last_tap_ok: Option<u64>,
+    /// Last successful IBE cutout contact.
+    pub last_ibe_ok: Option<u64>,
+    /// Last successful S3-mirror contact.
+    pub last_s3_ok: Option<u64>,
+}
+
+impl Default for UpstreamStatus {
+    fn default() -> Self {
+        Self {
+            ok: true,
+            last_sia_ok: None,
+            last_tap_ok: None,
+            last_ibe_ok: None,
+            last_s3_ok: None,
+        }
+    }
+}
+
+/// Recorded request outcomes feeding [`UpstreamStatus`]. The tracker
+/// never performs I/O; recording happens where an upstream exchange
+/// finishes (in `get_retry_on`).
+#[derive(Debug, Default)]
+struct Health {
+    state: Mutex<HealthState>,
+}
+
+#[derive(Debug, Default)]
+struct HealthState {
+    last_sia_ok: Option<SystemTime>,
+    last_tap_ok: Option<SystemTime>,
+    last_ibe_ok: Option<SystemTime>,
+    last_s3_ok: Option<SystemTime>,
+    /// Outcome of the most recently finished upstream contact.
+    last_ok: Option<bool>,
+    /// When the last upstream contact finished (drives probe idleness).
+    last_activity: Option<Instant>,
+    /// When the last detached probe was started.
+    probe_started: Option<Instant>,
+}
+
+fn unix_secs(t: Option<SystemTime>) -> Option<u64> {
+    t.and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+}
+
+impl Health {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HealthState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Record the final outcome of one upstream exchange. `ok` is the
+    /// reachability verdict computed by the caller: a real HTTP answer
+    /// below 500 counts as reachable even when it is a 4xx.
+    fn record(&self, channel: Upstream, ok: bool) {
+        let mut g = self.lock();
+        g.last_activity = Some(Instant::now());
+        g.last_ok = Some(ok);
+        if ok {
+            let slot = match channel {
+                Upstream::Sia => &mut g.last_sia_ok,
+                Upstream::Tap => &mut g.last_tap_ok,
+                Upstream::Ibe => &mut g.last_ibe_ok,
+                Upstream::S3 => &mut g.last_s3_ok,
+            };
+            *slot = Some(SystemTime::now());
+        }
+    }
+
+    /// True at most once per `interval` and only when no upstream
+    /// contact (real request or probe) finished inside the window —
+    /// health probing adds zero traffic while the app is being used.
+    fn probe_due(&self, interval: Duration) -> bool {
+        let mut g = self.lock();
+        let now = Instant::now();
+        let idle = g
+            .last_activity
+            .is_none_or(|t| now.duration_since(t) >= interval);
+        let not_running = g
+            .probe_started
+            .is_none_or(|t| now.duration_since(t) >= interval);
+        if !(idle && not_running) {
+            return false;
+        }
+        g.probe_started = Some(now);
+        true
+    }
+
+    fn snapshot(&self) -> UpstreamStatus {
+        let g = self.lock();
+        UpstreamStatus {
+            ok: g.last_ok.unwrap_or(true),
+            last_sia_ok: unix_secs(g.last_sia_ok),
+            last_tap_ok: unix_secs(g.last_tap_ok),
+            last_ibe_ok: unix_secs(g.last_ibe_ok),
+            last_s3_ok: unix_secs(g.last_s3_ok),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct IrsaClient {
     inner: Arc<Inner>,
@@ -316,6 +579,10 @@ struct Inner {
     collections_key: Arc<str>,
     cache: Cache<CacheKey, Entry>,
     failures: Cache<CacheKey, Failure>,
+    /// Upstream-reachability tracker for `/api/v1/health`.
+    health: Health,
+    /// Coverage index over `cache`/`CACHE_DIR` entries (b18).
+    index: Mutex<CoverageIndex>,
 }
 
 impl IrsaClient {
@@ -357,6 +624,8 @@ impl IrsaClient {
                 collections_key,
                 cache,
                 failures,
+                health: Health::default(),
+                index: Mutex::new(CoverageIndex::default()),
                 cfg,
             }),
         })
@@ -421,6 +690,7 @@ impl IrsaClient {
         };
         if let Some(Entry::Observations(hit)) = self.inner.cache.get(&key).await {
             debug!("irsa search cache hit");
+            self.index_search(ra_deg, dec_deg, radius, key);
             return Ok(hit);
         }
         if let Some(f) = self.inner.failures.get(&key).await {
@@ -433,52 +703,118 @@ impl IrsaClient {
             .inner
             .cache
             .try_get_with(key.clone(), async move {
-                let sia = format!("{}/SIA", this.inner.cfg.base_url.trim_end_matches('/'));
-                let pos = pos_parameter(ra_deg, dec_deg, radius);
-                // Collections are queried concurrently (SIA took 20-33 s
-                // per collection near Barnard's Star on 2026-11-14); the
-                // shared semaphore still caps upstream concurrency.
-                let mut set = JoinSet::new();
-                for (idx, collection) in this.inner.cfg.collections.iter().enumerate() {
-                    let (this, collection, sia, pos, skey) = (
-                        this.clone(),
-                        collection.clone(),
-                        sia.clone(),
-                        pos.clone(),
-                        skey.clone(),
-                    );
-                    set.spawn(async move {
-                        let body = this.sia_body(&sia, &collection, &pos, &skey).await?;
-                        let text = String::from_utf8(body)
-                            .map_err(|_| IrsaError::Parse("SIA response is not UTF-8".into()))?;
-                        Ok::<_, IrsaError>((idx, observations_from_votable(&text, &collection)?))
-                    });
-                }
-                let mut parts: Vec<(usize, Vec<Observation>)> = Vec::new();
-                while let Some(joined) = set.join_next().await {
-                    let part = joined.map_err(|e| {
-                        IrsaError::Internal(format!(
-                            "SIA task failed to join: {}",
-                            join_error_kind(&e)
-                        ))
-                    })??;
-                    parts.push(part);
-                }
-                // Keep the configured collection order (dedup: first wins).
-                parts.sort_by_key(|(idx, _)| *idx);
-                let all: Vec<Observation> = parts.into_iter().flat_map(|(_, o)| o).collect();
-                let obs = Arc::new(dedup_by_url(all));
+                let obs = this
+                    .search_observations(ra_deg, dec_deg, radius, &skey)
+                    .await?;
                 if obs.is_empty() {
                     return Err(IrsaError::NoObservations);
                 }
-                Ok(Entry::Observations(obs))
+                Ok(Entry::Observations(Arc::new(obs)))
             })
             .await;
         match fetched {
-            Ok(Entry::Observations(obs)) => Ok(obs),
+            Ok(Entry::Observations(obs)) => {
+                self.index_search(ra_deg, dec_deg, radius, key);
+                Ok(obs)
+            }
             Ok(Entry::Frame(_)) => Err(IrsaError::Internal("cache entry kind mismatch".into())),
             Err(e) => Err(self.remember_failure(key, &e).await),
         }
+    }
+
+    /// Observation list covering the position: SIA2 over every
+    /// configured collection, or the TAP cone query when SIA fails
+    /// transiently and `sia_fallback_tap` is on. Deduped by
+    /// `access_url`; an empty list is *not* an error here (the caller
+    /// maps it to [`IrsaError::NoObservations`]).
+    async fn search_observations(
+        &self,
+        ra_deg: f64,
+        dec_deg: f64,
+        radius_deg: f64,
+        key: &CacheKey,
+    ) -> Result<Vec<Observation>, IrsaError> {
+        match self.sia_search(ra_deg, dec_deg, radius_deg, key).await {
+            Ok(obs) => Ok(dedup_by_url(obs)),
+            Err(e) => {
+                if !self.inner.cfg.sia_fallback_tap || !sia_failed(&e) {
+                    return Err(e);
+                }
+                warn!("SIA failed ({}); trying TAP fallback", e.log_safe());
+                match self.tap_search(ra_deg, dec_deg, key).await {
+                    Ok(obs) => Ok(dedup_by_url(obs)),
+                    Err(tap_err) => {
+                        warn!("TAP fallback failed too: {}", tap_err.log_safe());
+                        Err(e)
+                    }
+                }
+            }
+        }
+    }
+
+    /// SIA2 cone search over every configured collection. Collections
+    /// are queried concurrently (SIA took 20-33 s per collection near
+    /// Barnard's Star on 2026-11-14); the shared semaphore still caps
+    /// upstream concurrency.
+    async fn sia_search(
+        &self,
+        ra_deg: f64,
+        dec_deg: f64,
+        radius_deg: f64,
+        key: &CacheKey,
+    ) -> Result<Vec<Observation>, IrsaError> {
+        let sia = format!("{}/SIA", self.inner.cfg.base_url.trim_end_matches('/'));
+        let pos = pos_parameter(ra_deg, dec_deg, radius_deg);
+        let mut set = JoinSet::new();
+        for (idx, collection) in self.inner.cfg.collections.iter().enumerate() {
+            let (this, collection, sia, pos, skey) = (
+                self.clone(),
+                collection.clone(),
+                sia.clone(),
+                pos.clone(),
+                key.clone(),
+            );
+            set.spawn(async move {
+                let body = this.sia_body(&sia, &collection, &pos, &skey).await?;
+                let text = String::from_utf8(body)
+                    .map_err(|_| IrsaError::Parse("SIA response is not UTF-8".into()))?;
+                Ok::<_, IrsaError>((idx, observations_from_votable(&text, &collection)?))
+            });
+        }
+        let mut parts: Vec<(usize, Vec<Observation>)> = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            let part = joined.map_err(|e| {
+                IrsaError::Internal(format!("SIA task failed to join: {}", join_error_kind(&e)))
+            })??;
+            parts.push(part);
+        }
+        // Keep the configured collection order (dedup: first wins).
+        parts.sort_by_key(|(idx, _)| *idx);
+        Ok(parts.into_iter().flat_map(|(_, o)| o).collect())
+    }
+
+    /// TAP sync cone query (the SIA fallback): one ADQL request
+    /// covering every release, mapped onto [`Observation`]s and
+    /// disk-cached like SIA bodies (see `tap.rs` for the mapping and
+    /// the semantic differences vs SIA).
+    async fn tap_search(
+        &self,
+        ra_deg: f64,
+        dec_deg: f64,
+        key: &CacheKey,
+    ) -> Result<Vec<Observation>, IrsaError> {
+        let url = format!("{}/sync", self.inner.cfg.tap_url.trim_end_matches('/'));
+        let params = tap::sync_params(ra_deg, dec_deg);
+        let query: Vec<(&str, &str)> = params
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let body = self
+            .disk_cached_get(key, "tap", &url, &query, Upstream::Tap)
+            .await?;
+        let text = String::from_utf8(body)
+            .map_err(|_| IrsaError::Parse("TAP response is not UTF-8".into()))?;
+        tap::observations_from_tap(&text, &self.inner.cfg.base_url, &self.inner.cfg.collections)
     }
 
     pub async fn fetch_cutout(
@@ -499,6 +835,7 @@ impl IrsaClient {
             },
         };
         if let Some(Entry::Frame(hit)) = self.inner.cache.get(&key).await {
+            self.index_cutout(obs, ra_deg, dec_deg, fov_deg, key);
             return Ok(hit);
         }
         if let Some(f) = self.inner.failures.get(&key).await {
@@ -521,7 +858,13 @@ impl IrsaClient {
                 if let Some((d, name)) = &disk {
                     if let Some(bytes) = disk_read(&d.join(name), None).await {
                         match parse_frame(&bytes) {
-                            Ok(frame) => return Ok(Entry::Frame(Arc::new(frame))),
+                            Ok(frame) => {
+                                // Self-heal: a cutout file written before
+                                // sidecars existed gets its `.meta` now so
+                                // the coverage index can find it later.
+                                disk_write_meta(d, &disk_key).await;
+                                return Ok(Entry::Frame(Arc::new(frame)));
+                            }
                             Err(e) => warn!(
                                 "disk cache: discarding unreadable cutout: {}",
                                 fits_error_kind(&e)
@@ -535,7 +878,10 @@ impl IrsaClient {
                 let frame = parse_frame(&body)?;
                 if let Some((d, name)) = &disk {
                     match strip_extensions(&body, DISK_DROP_EXTENSIONS) {
-                        Ok(small) => disk_write(d, name, &small).await,
+                        Ok(small) => {
+                            disk_write(d, name, &small).await;
+                            disk_write_meta(d, &disk_key).await;
+                        }
                         Err(e) => warn!("disk cache: cannot strip cutout: {}", fits_error_kind(&e)),
                     }
                 }
@@ -543,12 +889,273 @@ impl IrsaClient {
             })
             .await;
         match fetched {
-            Ok(Entry::Frame(frame)) => Ok(frame),
+            Ok(Entry::Frame(frame)) => {
+                self.index_cutout(obs, ra_deg, dec_deg, fov_deg, key);
+                Ok(frame)
+            }
             Ok(Entry::Observations(_)) => {
                 Err(IrsaError::Internal("cache entry kind mismatch".into()))
             }
             Err(e) => Err(self.remember_failure(key, &e).await),
         }
+    }
+
+    /// Lock the coverage index; a poisoned mutex still yields its data
+    /// (the index is a hint structure — a panic elsewhere must not
+    /// break requests that could proceed without it).
+    fn lock_index(&self) -> std::sync::MutexGuard<'_, CoverageIndex> {
+        self.inner
+            .index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Record a cached cutout's coverage in the secondary index.
+    fn index_cutout(
+        &self,
+        obs: &Observation,
+        ra_deg: f64,
+        dec_deg: f64,
+        fov_deg: f64,
+        key: CacheKey,
+    ) {
+        self.lock_index().insert_cutout(
+            obs.id_hash(),
+            CutoutIndexEntry {
+                ra: ra_deg,
+                dec: dec_deg,
+                size: fov_deg,
+                key,
+            },
+        );
+    }
+
+    /// Record a cached SIA cone in the secondary index.
+    fn index_search(&self, ra_deg: f64, dec_deg: f64, radius: f64, key: CacheKey) {
+        self.lock_index().insert_search(SearchIndexEntry {
+            ra: ra_deg,
+            dec: dec_deg,
+            radius,
+            key,
+        });
+    }
+
+    /// Populate the coverage index from the `CACHE_DIR` `.meta`
+    /// sidecars, once per process. Best-effort: an unreadable directory
+    /// or malformed file only means that entry is not discoverable, so
+    /// the request falls back to the normal paths. Entries written
+    /// after the scan are indexed at insert time, so no rescan is ever
+    /// needed.
+    async fn scan_disk_index(&self) {
+        let Some(dir) = self.inner.cfg.cache_dir.clone() else {
+            return;
+        };
+        if self.lock_index().disk_scanned {
+            return;
+        }
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(rd) => rd,
+            Err(_) => {
+                // Do not retry: a missing/unreadable cache dir means
+                // "no disk cache"; the memory paths still work.
+                self.lock_index().disk_scanned = true;
+                return;
+            }
+        };
+        let mut metas = Vec::new();
+        while let Ok(Some(e)) = rd.next_entry().await {
+            let name = e.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.ends_with(".meta") {
+                continue;
+            }
+            if let Ok(text) = tokio::fs::read_to_string(e.path()).await {
+                metas.push(text);
+            }
+        }
+        let mut idx = self.lock_index();
+        for text in &metas {
+            match parse_meta(text, &self.inner.collections_key) {
+                Some(Meta::Cutout { ra, dec, size, obs }) => idx.insert_cutout(
+                    obs,
+                    CutoutIndexEntry {
+                        ra,
+                        dec,
+                        size,
+                        key: CacheKey {
+                            collections: self.inner.collections_key.clone(),
+                            kind: KeyKind::Frame {
+                                ra: ra.to_bits(),
+                                dec: dec.to_bits(),
+                                size: size.to_bits(),
+                                obs,
+                            },
+                        },
+                    },
+                ),
+                Some(Meta::Search { ra, dec, radius }) => idx.insert_search(SearchIndexEntry {
+                    ra,
+                    dec,
+                    radius,
+                    key: CacheKey {
+                        collections: self.inner.collections_key.clone(),
+                        kind: KeyKind::Search {
+                            ra: ra.to_bits(),
+                            dec: dec.to_bits(),
+                            radius: radius.to_bits(),
+                        },
+                    },
+                }),
+                None => {}
+            }
+        }
+        idx.disk_scanned = true;
+    }
+
+    /// Read-only coverage probe (b18): the smallest cached cutout of
+    /// `obs` whose box fully contains `(ra_deg, dec_deg)` plus an
+    /// aperture margin of `margin_deg` degrees on the sky. Looks in the
+    /// in-memory decoded-frame cache first, then — when `CACHE_DIR` is
+    /// set — in the disk cache (the same decoded-from-bytes path the
+    /// normal fetch uses). Never performs upstream traffic; `None`
+    /// means "no covering cutout cached" and callers fall back to
+    /// [`Self::fetch_cutout`].
+    ///
+    /// `margin_deg` is converted to pixels with each candidate frame's
+    /// own CD scale, so callers should pass `needed_px * scale_bound`
+    /// where `scale_bound` is at least the frame's native pixel scale
+    /// (an over-estimate only makes the check slightly stricter).
+    pub async fn cached_cutout_covering(
+        &self,
+        obs: &Observation,
+        ra_deg: f64,
+        dec_deg: f64,
+        margin_deg: f64,
+    ) -> Option<Arc<Frame>> {
+        self.scan_disk_index().await;
+        // Snapshot the geometrically plausible candidates, smallest
+        // first: any point inside a box is within its half-diagonal of
+        // the centre, so the filter never drops a true covering cutout.
+        let mut candidates: Vec<CutoutIndexEntry> = {
+            let idx = self.lock_index();
+            idx.cutouts
+                .get(&obs.id_hash())
+                .map(|es| {
+                    es.iter()
+                        .filter(|e| {
+                            sky_dist_deg(ra_deg, dec_deg, e.ra, e.dec) <= search_radius_deg(e.size)
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        candidates.sort_by(|a, b| a.size.total_cmp(&b.size));
+        for e in candidates {
+            if let Some(Entry::Frame(frame)) = self.inner.cache.get(&e.key).await {
+                if frame_covers(&frame, ra_deg, dec_deg, margin_deg) {
+                    return Some(frame);
+                }
+                continue;
+            }
+            let Some(dir) = &self.inner.cfg.cache_dir else {
+                continue;
+            };
+            let Some(bytes) = disk_read(&dir.join(e.key.file_name("")), None).await else {
+                continue;
+            };
+            match parse_frame(&bytes) {
+                Ok(f) => {
+                    let frame = Arc::new(f);
+                    self.inner
+                        .cache
+                        .insert(e.key, Entry::Frame(frame.clone()))
+                        .await;
+                    if frame_covers(&frame, ra_deg, dec_deg, margin_deg) {
+                        return Some(frame);
+                    }
+                }
+                Err(err) => warn!(
+                    "disk cache: discarding unreadable cutout: {}",
+                    fits_error_kind(&err)
+                ),
+            }
+        }
+        None
+    }
+
+    /// Read-only coverage probe for the SIA result list (b18): an
+    /// already-cached cone search (memory or `CACHE_DIR`) whose cone
+    /// contains `(ra_deg, dec_deg)`.
+    ///
+    /// Reuse rule: SIA returns every observation whose footprint
+    /// intersects the cone, so a cached result for a cone containing
+    /// the click is a superset of "observations covering the click" —
+    /// any observation covering the click intersects the cone at the
+    /// click itself. The smallest covering cone wins: it carries the
+    /// least excess of observations that do not cover the click. Never
+    /// performs upstream traffic; `None` lets the caller run the real
+    /// search (at its own, possibly cached, position).
+    pub async fn cached_observations_covering(
+        &self,
+        ra_deg: f64,
+        dec_deg: f64,
+    ) -> Option<Arc<Vec<Observation>>> {
+        self.scan_disk_index().await;
+        let mut candidates: Vec<SearchIndexEntry> = {
+            let idx = self.lock_index();
+            idx.searches
+                .iter()
+                .filter(|e| sky_dist_deg(ra_deg, dec_deg, e.ra, e.dec) <= e.radius)
+                .cloned()
+                .collect()
+        };
+        candidates.sort_by(|a, b| a.radius.total_cmp(&b.radius));
+        for e in candidates {
+            if let Some(Entry::Observations(obs)) = self.inner.cache.get(&e.key).await {
+                return Some(obs);
+            }
+            let Some(dir) = &self.inner.cfg.cache_dir else {
+                continue;
+            };
+            if let Some(obs) = self.disk_observations(&e.key, dir).await {
+                self.inner
+                    .cache
+                    .insert(e.key, Entry::Observations(obs.clone()))
+                    .await;
+                return Some(obs);
+            }
+        }
+        None
+    }
+
+    /// Rebuild a deduplicated observation list from the per-collection
+    /// SIA bodies under `dir`; `None` when any collection body is
+    /// missing, stale or unparseable — the caller then takes the normal
+    /// search path (never a partial upstream substitute).
+    async fn disk_observations(
+        &self,
+        key: &CacheKey,
+        dir: &std::path::Path,
+    ) -> Option<Arc<Vec<Observation>>> {
+        let mut all = Vec::new();
+        for collection in &self.inner.cfg.collections {
+            let bytes =
+                disk_read(&dir.join(key.file_name(collection)), Some(SEARCH_DISK_TTL)).await?;
+            let text = String::from_utf8(bytes).ok()?;
+            all.extend(observations_from_votable(&text, collection).ok()?);
+        }
+        let obs = dedup_by_url(all);
+        (!obs.is_empty()).then(|| Arc::new(obs))
+    }
+
+    /// Diagnostic: entries in the coverage index (for tests; the bound
+    /// is documented on [`CoverageIndex`]).
+    #[doc(hidden)]
+    pub fn coverage_index_len(&self) -> usize {
+        self.lock_index().len()
     }
 
     /// Raw SIA VOTable for one collection, from `CACHE_DIR` when fresh.
@@ -559,24 +1166,85 @@ impl IrsaClient {
         pos: &str,
         key: &CacheKey,
     ) -> Result<Vec<u8>, IrsaError> {
+        self.disk_cached_get(
+            key,
+            collection,
+            sia,
+            &[("COLLECTION", collection), ("POS", pos)],
+            Upstream::Sia,
+        )
+        .await
+    }
+
+    /// GET `url` with retry (channel `chan` for health accounting),
+    /// serving from `CACHE_DIR` when a fresh copy exists and writing the
+    /// fetched body back. `suffix` makes the disk file name unique
+    /// within one search (collection name for SIA, `"tap"` for TAP).
+    async fn disk_cached_get(
+        &self,
+        key: &CacheKey,
+        suffix: &str,
+        url: &str,
+        query: &[(&str, &str)],
+        chan: Upstream,
+    ) -> Result<Vec<u8>, IrsaError> {
         let disk = self
             .inner
             .cfg
             .cache_dir
             .as_ref()
-            .map(|d| (d.clone(), key.file_name(collection)));
+            .map(|d| (d.clone(), key.file_name(suffix)));
         if let Some((d, name)) = &disk {
             if let Some(b) = disk_read(&d.join(name), Some(SEARCH_DISK_TTL)).await {
+                // Self-heal the coverage sidecar (same reasoning as the
+                // cutout path); written once per collection, idempotent.
+                disk_write_meta(d, key).await;
                 return Ok(b);
             }
         }
-        let b = self
-            .get_with_retry(sia, &[("COLLECTION", collection), ("POS", pos)])
-            .await?;
+        let b = self.get_with_retry(url, query, chan).await?;
         if let Some((d, name)) = &disk {
             disk_write(d, name, &b).await;
+            disk_write_meta(d, key).await;
         }
         Ok(b)
+    }
+
+    /// Upstream reachability snapshot for `/api/v1/health`, derived
+    /// from the client's own request outcomes — never blocking.
+    ///
+    /// When no upstream contact finished inside
+    /// `health_probe_interval`, one detached SIA probe is spawned (at
+    /// most one per interval) so an idle server still reports a fresh
+    /// verdict; a busy server never pays for probes.
+    pub fn upstream_status(&self) -> UpstreamStatus {
+        if self
+            .inner
+            .health
+            .probe_due(self.inner.cfg.health_probe_interval)
+        {
+            let this = self.clone();
+            tokio::spawn(async move { this.probe_sia().await });
+        }
+        self.inner.health.snapshot()
+    }
+
+    /// Cheap SIA probe on the first configured collection: a
+    /// millidegree cone search whose outcome lands in the same health
+    /// tracker as real traffic (failures are not cached — probes are
+    /// detached observability, not user requests).
+    async fn probe_sia(&self) {
+        let sia = format!("{}/SIA", self.inner.cfg.base_url.trim_end_matches('/'));
+        let Some(collection) = self.inner.cfg.collections.first() else {
+            return;
+        };
+        let _ = self
+            .get_with_retry(
+                &sia,
+                &[("COLLECTION", collection.as_str()), ("POS", PROBE_POS)],
+                Upstream::Sia,
+            )
+            .await;
     }
 
     /// Negative-cache a (possibly shared) upstream failure and return
@@ -728,7 +1396,7 @@ impl IrsaClient {
                 }
             }
         }
-        self.get_with_retry(ibe_url, &[]).await
+        self.get_with_retry(ibe_url, &[], Upstream::Ibe).await
     }
 
     /// Rebuild the IBE cutout from ranges of the full-frame file at `url`.
@@ -872,14 +1540,22 @@ impl IrsaClient {
         &self,
         url: &str,
         query: &[(&str, &str)],
+        chan: Upstream,
     ) -> Result<Vec<u8>, IrsaError> {
-        self.get_retry_on(&self.inner.sem, url, query, None).await
+        self.get_retry_on(&self.inner.sem, url, query, None, chan)
+            .await
     }
 
     /// GET the last `n` bytes of `url` from the S3 mirror (suffix range).
     async fn get_tail(&self, url: &str, n: usize) -> Result<Vec<u8>, IrsaError> {
-        self.get_retry_on(&self.inner.s3_sem, url, &[], Some(ByteRange::Suffix(n)))
-            .await
+        self.get_retry_on(
+            &self.inner.s3_sem,
+            url,
+            &[],
+            Some(ByteRange::Suffix(n)),
+            Upstream::S3,
+        )
+        .await
     }
 
     /// GET bytes `range` (half-open) of `url` from the S3 mirror.
@@ -897,6 +1573,7 @@ impl IrsaClient {
                 url,
                 &[],
                 Some(ByteRange::Span(range.clone())),
+                Upstream::S3,
             )
             .await?;
         if body.len() > range.len() {
@@ -912,6 +1589,7 @@ impl IrsaClient {
         url: &str,
         query: &[(&str, &str)],
         range: Option<ByteRange>,
+        chan: Upstream,
     ) -> Result<Vec<u8>, IrsaError> {
         let mut attempt = 0usize;
         loop {
@@ -924,10 +1602,19 @@ impl IrsaClient {
                 self.try_get(url, query, range.clone()).await
             };
             match outcome {
-                Attempt::Ok(body) => return Ok(body),
-                Attempt::Fatal(e) => return Err(e),
+                Attempt::Ok(body) => {
+                    self.inner.health.record(chan, true);
+                    return Ok(body);
+                }
+                Attempt::Fatal(e) => {
+                    // A real HTTP answer below 500, or an oversized
+                    // body, still proves the service is reachable.
+                    self.inner.health.record(chan, contact_ok(&e));
+                    return Err(e);
+                }
                 Attempt::Retryable(detail) => {
                     if attempt >= self.inner.cfg.max_attempts {
+                        self.inner.health.record(chan, false);
                         return Err(IrsaError::Unavailable {
                             attempts: attempt,
                             detail,
@@ -1056,6 +1743,128 @@ fn find_wcs_wave(tail: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         end_off += BLOCK;
     }
     None
+}
+
+/// SIA probe cone: a millidegree circle at the origin — tiny result,
+/// still exercises the real service path.
+const PROBE_POS: &str = "circle 0 0 0.0001";
+
+/// Whether a SIA failure qualifies for the TAP fallback: transient
+/// exhaustion (503/429/timeout/transport after all retries) or a
+/// non-retryable 5xx. 4xx answers, parse failures and empty results
+/// are authoritative and are returned unchanged.
+fn sia_failed(e: &IrsaError) -> bool {
+    matches!(e, IrsaError::Unavailable { .. })
+        || matches!(e, IrsaError::Http { status } if *status >= 500)
+}
+
+/// Whether finishing with `e` still proves the upstream answered:
+/// any HTTP status below 500 (4xx included — the service is alive and
+/// judged the request) or an oversized body.
+fn contact_ok(e: &IrsaError) -> bool {
+    match e {
+        IrsaError::Http { status } => *status < 500,
+        _ => true,
+    }
+}
+
+/// Write the `.meta` coverage sidecar of `key` into `dir` (same
+/// best-effort atomic write as the data files; see
+/// [`CacheKey::meta_name`]).
+async fn disk_write_meta(dir: &std::path::Path, key: &CacheKey) {
+    disk_write(dir, &key.meta_name(), key.meta_body().as_bytes()).await;
+}
+
+/// Angular distance in degrees between two sky positions, small-angle
+/// approximation (fields here are well under a degree) with RA wrapped
+/// into [-180, 180).
+fn sky_dist_deg(ra: f64, dec: f64, cra: f64, cdec: f64) -> f64 {
+    let dra = (ra - cra + 540.0).rem_euclid(360.0) - 180.0;
+    let ddec = dec - cdec;
+    let x = dra * f64::midpoint(dec, cdec).to_radians().cos();
+    x.hypot(ddec)
+}
+
+/// True when `frame`'s pixel box fully contains the sky point plus a
+/// margin of `margin_deg` degrees on the sky: the point maps at least
+/// `margin_deg / scale` pixels inside every array edge, where `scale`
+/// is the frame's own CD pixel scale. That is exactly what the spectrum
+/// aperture needs — a click near the cutout edge whose aperture would
+/// fall off the array is NOT covered and must not be served from this
+/// frame.
+fn frame_covers(frame: &Frame, ra_deg: f64, dec_deg: f64, margin_deg: f64) -> bool {
+    let cd = frame.wcs.cd;
+    let scale = (cd[0][0] * cd[1][1] - cd[0][1] * cd[1][0]).abs().sqrt();
+    if !(scale.is_finite() && scale > 0.0) {
+        return false;
+    }
+    let Ok((px, py)) = frame.wcs.radec_to_pixel(ra_deg, dec_deg) else {
+        return false;
+    };
+    let (ny, nx) = frame.image.dim();
+    let m = margin_deg / scale;
+    px.is_finite()
+        && py.is_finite()
+        && px - m >= 0.5
+        && px + m <= nx as f64 + 0.5
+        && py - m >= 0.5
+        && py + m <= ny as f64 + 0.5
+}
+
+/// One parsed `.meta` sidecar line (see [`CacheKey::meta_body`]).
+enum Meta {
+    /// Cutout geometry: centre, square side, observation id hash.
+    Cutout {
+        /// Cutout centre RA, degrees.
+        ra: f64,
+        /// Cutout centre Dec, degrees.
+        dec: f64,
+        /// Requested square side, degrees.
+        size: f64,
+        /// Observation id hash (FNV-1a of the access URL).
+        obs: u64,
+    },
+    /// SIA cone: centre and radius.
+    Search {
+        /// Cone centre RA, degrees.
+        ra: f64,
+        /// Cone centre Dec, degrees.
+        dec: f64,
+        /// Cone radius, degrees.
+        radius: f64,
+    },
+}
+
+/// Parse a `.meta` sidecar body for a client whose collection set is
+/// `collections`; `None` on any format drift or set mismatch — foreign
+/// or corrupt files are skipped, never fatal.
+fn parse_meta(text: &str, collections: &str) -> Option<Meta> {
+    let mut t = text.split_whitespace();
+    if t.next() != Some("v1") {
+        return None;
+    }
+    let kind = t.next()?;
+    if t.next()? != collections {
+        return None;
+    }
+    let bits = |tok: Option<&str>| {
+        tok.and_then(|s| u64::from_str_radix(s, 16).ok())
+            .map(f64::from_bits)
+    };
+    match kind {
+        "search" => Some(Meta::Search {
+            ra: bits(t.next())?,
+            dec: bits(t.next())?,
+            radius: bits(t.next())?,
+        }),
+        "cutout" => Some(Meta::Cutout {
+            ra: bits(t.next())?,
+            dec: bits(t.next())?,
+            size: bits(t.next())?,
+            obs: u64::from_str_radix(t.next()?, 16).ok()?,
+        }),
+        _ => None,
+    }
 }
 
 /// Object key of an IRSA `/ibe/data/spherex/<key>` access URL on the S3

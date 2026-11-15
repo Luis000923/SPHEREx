@@ -68,15 +68,48 @@ variable below is read by `backend/src/config.rs` or
 | `IRSA_MAX_ATTEMPTS` | `3` | Attempts per IRSA request, with exponential backoff on 503/429. |
 | `IRSA_RETRY_BASE_MS` | `400` | Base backoff between IRSA retries, milliseconds. |
 | `IRSA_MAX_BODY_MB` | `64` | Maximum accepted IRSA response body, MiB. |
+| `SIA_FALLBACK_TAP` | `1` | Query the IRSA TAP service when every SIA attempt fails transiently (503/429/timeout/5xx after all retries). Accepts `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`. |
+| `IRSA_TAP_URL` | `https://irsa.ipac.caltech.edu/TAP` | IVOA TAP endpoint base used by the SIA fallback; `/sync` is appended. Must be non-empty while `SIA_FALLBACK_TAP` is on. |
+| `HEALTH_PROBE_SECS` | `300` | Minimum spacing between the detached upstream health probes `/api/v1/health` may spawn when no upstream contact finished recently. Real traffic resets the timer, so a busy app never probes; the container HEALTHCHECK polls `/health` every 30 s, so the default keeps idle probes to once per 5 minutes. |
 | `CUTOUT_SOURCE` | `s3` | Cutout source: `s3` assembles cutouts from byte ranges of the AWS mirror (IBE fallback); `ibe` uses the IRSA IBE cutout service only. |
 | `SPHEREX_S3_BASE_URL` | `https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com` | Base URL of the AWS S3 mirror of the `/ibe/data/spherex/` paths. |
 | `S3_MAX_CONCURRENCY` | `16` | Parallel byte-range requests to the S3 mirror; separate from `IRSA_MAX_CONCURRENCY` (AWS is not the shared IRSA service). |
-| `CACHE_DIR` | unset | Persistent cache directory: SIA results and cutouts survive restarts. Unset = in-memory only. Compose mounts the `spherex-cache` volume at `/data/cache`. |
+| `CACHE_DIR` | unset | Persistent cache directory: SIA results and cutouts survive restarts. Unset = in-memory only. Compose mounts the `spherex-cache` volume at `/data/cache`; the container user is uid 999 and must be able to write it (see "Cache volume" below). |
 | `MAX_FRAMES` | `60` | Upper bound on frames per `/api/v1/frames` (contract max 60). |
 | `MAX_CACHE_MB` | `200` | In-memory cutout cache cap, MiB. |
 
 `PORT`, `STATIC_DIR`, `RUST_LOG`, `MAX_CACHE_MB` and `IRSA_MAX_CONCURRENCY`
 have defaults baked into the image; set the rest per environment as needed.
+
+## Cache volume
+
+The image creates `/data/cache` owned by `app:app` (uid/gid 999, the
+non-root `USER` the container runs as). A **named volume** (the Compose
+default) is initialized from the image contents on first use, so it
+inherits `app:app` ownership and just works. For a **bind mount**, prepare
+the host directory for uid 999:
+
+```sh
+sudo install -d -o 999 -g 999 /srv/spherex-cache
+docker run -d -e CACHE_DIR=/data/cache -v /srv/spherex-cache:/data/cache \
+  -p 127.0.0.1:8080:8080 spherex-blink
+```
+
+## Behind a reverse proxy
+
+The API rate limiter (`RATE_LIMIT_RPS`) keys on the client IP taken from
+the `X-Forwarded-For` header when present, falling back to the TCP peer
+address. That is correct behind Caddy, nginx or any proxy that sets the
+header — per-visitor limits work as intended. It also means the limit is
+**evadable if the container port is reachable directly**: a client that
+can bypass the proxy simply spoofs `X-Forwarded-For`. Always publish the
+port on localhost only (`-p 127.0.0.1:8080:8080`) or firewall it so every
+request arrives through the proxy.
+
+`ALLOWED_ORIGINS` is only needed when the frontend is hosted on a
+**different origin** than the API (another domain, port or scheme). The
+image serves the UI same-origin, so leave it empty — empty is the
+strictest setting, no cross-origin requests at all.
 
 ## Quick start on a VPS
 
@@ -200,6 +233,9 @@ URL. Do this **as soon as the URL exists** (reviews take ~24 h):
 
 - `backend`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo test` (Swatinem/rust-cache).
+- `supply-chain`: `cargo deny check licenses advisories bans` via
+  `EmbarkStudios/cargo-deny-action@v2` against `backend/deny.toml`
+  (license allow-list, RustSec advisories, bans). No secrets.
 - `frontend`: `npm ci`, `npx tsc --noEmit`, `npx vitest run`, `npx eslint .`,
   `npm run build` (npm cache on `frontend/package-lock.json`).
 - `docker`: `docker build` plus `scripts/docker-smoke.sh` — builds the

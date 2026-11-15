@@ -7,9 +7,14 @@
 //! `t_min`/`t_max` (`unit="d"`, MJD), `em_min`/`em_max` (`unit="m"`),
 //! `energy_bandpassname` and `access_url` columns. There is no detector
 //! column: `DETECTOR` is a FITS header keyword read after the cutout
-//! download (`crate::fits::FrameMeta::detector`).
+//! download (`crate::fits::FrameMeta::detector`). Until then the only
+//! detector hint is `energy_bandpassname` (`"SPHEREx-D3"`, parsed by
+//! [`Observation::detector_hint`]) and the only wavelength estimate is
+//! the `em_*` band centre ([`Observation::band_center_um`]); both drive
+//! [`Observation::select_comparable`], the selection used by the
+//! combining modes (`diff`/`coadd`/`stack`).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use super::error::IrsaError;
 use super::votable::{parse_votable, Votable};
@@ -61,6 +66,189 @@ impl Observation {
             (true, false) => self.t_min_mjd,
             _ => self.t_max_mjd,
         }
+    }
+
+    /// Detector number (1-6) parsed from `energy_bandpassname`
+    /// (`"SPHEREx-D3"` -> 3). SIA2 has no detector column, so this is
+    /// the only detector information available **before** the cutout
+    /// download (the FITS `DETECTOR` keyword is authoritative but only
+    /// readable afterwards). `None` when the band name is absent or
+    /// carries no `D<n>` suffix in range.
+    pub fn detector_hint(&self) -> Option<u8> {
+        let name = self.band_name.trim();
+        for (i, c) in name.char_indices().rev() {
+            if !matches!(c, 'D' | 'd') {
+                continue;
+            }
+            if let Ok(d) = name[i + c.len_utf8()..].trim().parse::<u8>() {
+                if (1..=6).contains(&d) {
+                    return Some(d);
+                }
+            }
+        }
+        None
+    }
+
+    /// Central wavelength (um) of the passband: midpoint of the SIA
+    /// spectral bounds `em_min`/`em_max`. A pre-download estimate of the
+    /// frame's central wavelength — the WCS-WAVE value at the cutout
+    /// centre, read after download, is authoritative. NaN when both
+    /// bounds are missing.
+    pub fn band_center_um(&self) -> f64 {
+        match (self.em_min_um.is_finite(), self.em_max_um.is_finite()) {
+            (true, true) => f64::midpoint(self.em_min_um, self.em_max_um),
+            (true, false) => self.em_min_um,
+            (false, true) => self.em_max_um,
+            (false, false) => f64::NAN,
+        }
+    }
+
+    /// Pick at most `max` observations for the *combining* modes
+    /// (`diff`, `coadd`, `stack`).
+    ///
+    /// Those modes only merge frames of the same detector AND the same
+    /// central wavelength within
+    /// [`crate::science::DEFAULT_WAVELENGTH_TOLERANCE_UM`]
+    /// (`science::group_frames`), so spreading the budget evenly over
+    /// the survey — what [`select_frames`] does, and still does for
+    /// `raw` — yields mostly singleton groups and starves the mode
+    /// (measured live on WISE 0855: 5 usable diff frames out of 24
+    /// selected exposures). This selector concentrates the budget on
+    /// the largest comparable buckets instead.
+    ///
+    /// Algorithm (pre-download columns only: detector from
+    /// [`detector_hint`](Self::detector_hint), wavelength from
+    /// [`band_center_um`](Self::band_center_um); the FITS headers are
+    /// only readable after the cutout download):
+    ///
+    /// 1. Bucket candidates by detector hint; inside each detector,
+    ///    cluster rows sorted by band centre into wavelength bins using
+    ///    the same anchored rule `group_frames` applies — a new bin
+    ///    starts when a centre lies more than
+    ///    [`COMPARABLE_WAVELENGTH_BIN_UM`] away from the bin's first
+    ///    member. Rows with an unknown band centre each form a
+    ///    singleton bin.
+    /// 2. Rank buckets by epoch count, then by time baseline.
+    /// 3. When the best bucket has fewer than
+    ///    [`MIN_COMPARABLE_EPOCHS`] epochs, fall back to the even-spread
+    ///    [`select_frames`]: no group is worth concentrating on.
+    /// 4. Otherwise fill the budget bucket by bucket, best first:
+    ///    take every epoch of a bucket that fits, or `remaining`
+    ///    epochs evenly spread over its epoch-sorted members
+    ///    (endpoints included, like `select_frames`).
+    ///
+    /// The result is returned newest first, same as `select_frames`.
+    /// When `obs.len() <= max` (or `max == 0`) every observation is
+    /// returned: selection cannot improve a set that already fits.
+    /// Associated function rather than a free `sia` export because the
+    /// `sia` module is private to `crate::irsa`; `Observation` itself
+    /// is re-exported, so this stays reachable.
+    pub fn select_comparable(obs: &[Observation], max: usize) -> Vec<Observation> {
+        if obs.len() <= max || max == 0 {
+            return select_frames(obs, max);
+        }
+        let mut buckets = comparable_buckets(obs);
+        buckets.sort_by(|a, b| {
+            b.len()
+                .cmp(&a.len())
+                .then_with(|| bucket_baseline(b).total_cmp(&bucket_baseline(a)))
+                .then_with(|| {
+                    a.first()
+                        .map(|o| o.access_url.as_str())
+                        .cmp(&b.first().map(|o| o.access_url.as_str()))
+                })
+        });
+        if buckets.first().map_or(0, Vec::len) < MIN_COMPARABLE_EPOCHS {
+            return select_frames(obs, max);
+        }
+        let mut picked = Vec::with_capacity(max);
+        let mut remaining = max;
+        for b in &buckets {
+            if remaining == 0 {
+                break;
+            }
+            let n = b.len();
+            let k = n.min(remaining);
+            if k == n {
+                picked.extend(b.iter().cloned());
+            } else {
+                let idx: HashSet<usize> = (0..k).map(|j| (j * (n - 1)) / (k - 1).max(1)).collect();
+                picked.extend(
+                    b.iter()
+                        .enumerate()
+                        .filter(|(i, _)| idx.contains(i))
+                        .map(|(_, o)| o.clone()),
+                );
+            }
+            remaining -= k;
+        }
+        picked.sort_by(|a, b| b.epoch().total_cmp(&a.epoch()));
+        picked
+    }
+}
+
+/// Wavelength bin width (um) for [`Observation::select_comparable`]:
+/// the same tolerance `science::group_frames` applies when combining
+/// frames, so a bucket is exactly the pre-download approximation of a
+/// comparable group.
+const COMPARABLE_WAVELENGTH_BIN_UM: f64 = crate::science::DEFAULT_WAVELENGTH_TOLERANCE_UM;
+
+/// Fewest epochs that make a bucket worth concentrating the budget on.
+/// A diff needs at least two members to yield anything; below three
+/// the even-spread selection is the better default.
+const MIN_COMPARABLE_EPOCHS: usize = 3;
+
+/// Split `obs` into detector x wavelength buckets (step 1 of
+/// [`Observation::select_comparable`]), each sorted by epoch
+/// ascending. `None`-detector rows share one "unknown" bucket set.
+fn comparable_buckets(obs: &[Observation]) -> Vec<Vec<Observation>> {
+    let mut by_det: BTreeMap<Option<u8>, Vec<Observation>> = BTreeMap::new();
+    for o in obs {
+        by_det.entry(o.detector_hint()).or_default().push(o.clone());
+    }
+    let mut buckets = Vec::new();
+    for (_det, mut rows) in by_det {
+        rows.sort_by(|a, b| a.band_center_um().total_cmp(&b.band_center_um()));
+        let mut bin: Vec<Observation> = Vec::new();
+        let mut anchor = f64::NAN;
+        for o in rows {
+            let w = o.band_center_um();
+            if bin.is_empty() {
+                anchor = w;
+                bin.push(o);
+            } else if (w - anchor).abs() <= COMPARABLE_WAVELENGTH_BIN_UM {
+                bin.push(o);
+            } else {
+                buckets.push(std::mem::take(&mut bin));
+                anchor = w;
+                bin.push(o);
+            }
+        }
+        if !bin.is_empty() {
+            buckets.push(bin);
+        }
+    }
+    for b in &mut buckets {
+        b.sort_by(|x, y| x.epoch().total_cmp(&y.epoch()));
+    }
+    buckets
+}
+
+/// Time baseline (days) spanned by a bucket's finite epochs; 0 when
+/// fewer than two members carry a finite epoch.
+fn bucket_baseline(bucket: &[Observation]) -> f64 {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for o in bucket {
+        let e = o.epoch();
+        if e.is_finite() {
+            lo = lo.min(e);
+            hi = hi.max(e);
+        }
+    }
+    if hi >= lo {
+        hi - lo
+    } else {
+        0.0
     }
 }
 

@@ -17,6 +17,9 @@
 //! | `IRSA_MAX_ATTEMPTS`    | `3`                                  |
 //! | `IRSA_RETRY_BASE_MS`   | `400`                                |
 //! | `IRSA_MAX_BODY_MB`     | `64`                                 |
+//! | `SIA_FALLBACK_TAP`     | `1` (query TAP when SIA is down)   |
+//! | `IRSA_TAP_URL`         | `https://irsa.ipac.caltech.edu/TAP` |
+//! | `HEALTH_PROBE_SECS`    | `300` (min seconds between probes) |
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,6 +28,10 @@ use super::error::IrsaError;
 
 /// Default IRSA origin.
 pub const DEFAULT_BASE_URL: &str = "https://irsa.ipac.caltech.edu";
+/// Default IVOA TAP endpoint (sync queries append `/sync`).
+/// Verified live 2026-11-14 (`GET /TAP/availability`); the ADQL pattern
+/// is documented in the IRSA cutouts notebook, see `irsa::tap`.
+pub const DEFAULT_TAP_URL: &str = "https://irsa.ipac.caltech.edu/TAP";
 /// Default SIA2 collections (`_deep` variants are opt-in via env).
 /// Public AWS Open Data mirror of the SPHEREx files (same object keys as
 /// the IRSA `/ibe/data/spherex/` paths; listed in SIA `cloud_access`).
@@ -84,6 +91,16 @@ pub struct IrsaConfig {
     /// Separate from `IRSA_MAX_CONCURRENCY`: AWS is not the shared IRSA
     /// service.
     pub s3_max_concurrency: usize,
+    /// When SIA fails transiently (HTTP 5xx, timeouts, retries
+    /// exhausted), answer the search from TAP (`SIA_FALLBACK_TAP`,
+    /// default on).
+    pub sia_fallback_tap: bool,
+    /// TAP endpoint base (`IRSA_TAP_URL`); `/sync` is appended.
+    pub tap_url: String,
+    /// Minimum spacing between upstream health probes triggered by
+    /// `/api/v1/health` when nothing else reached IRSA recently
+    /// (`HEALTH_PROBE_SECS`, default 300).
+    pub health_probe_interval: Duration,
 }
 
 impl Default for IrsaConfig {
@@ -109,6 +126,9 @@ impl Default for IrsaConfig {
             cutout_source: CutoutSource::S3,
             s3_base_url: DEFAULT_S3_BASE_URL.to_string(),
             s3_max_concurrency: 16,
+            sia_fallback_tap: true,
+            tap_url: DEFAULT_TAP_URL.to_string(),
+            health_probe_interval: Duration::from_secs(300),
         }
     }
 }
@@ -168,6 +188,24 @@ impl IrsaConfig {
         )?;
         cfg.max_body_bytes =
             usize::try_from(body_mb.saturating_mul(1024 * 1024)).unwrap_or(usize::MAX);
+        if let Ok(v) = std::env::var("SIA_FALLBACK_TAP") {
+            cfg.sia_fallback_tap = match v.trim() {
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON" => true,
+                "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF" => false,
+                _ => {
+                    return Err(IrsaError::Config(
+                        "SIA_FALLBACK_TAP must be a boolean (1/0, true/false)".into(),
+                    ))
+                }
+            };
+        }
+        if let Ok(v) = std::env::var("IRSA_TAP_URL") {
+            cfg.tap_url = v;
+        }
+        cfg.health_probe_interval = Duration::from_secs(env_u64(
+            "HEALTH_PROBE_SECS",
+            cfg.health_probe_interval.as_secs(),
+        )?);
         cfg.validate()?;
         Ok(cfg)
     }
@@ -198,6 +236,11 @@ impl IrsaConfig {
         }
         if self.max_body_bytes == 0 {
             return Err(IrsaError::Config("IRSA_MAX_BODY_MB must be >= 1".into()));
+        }
+        if self.sia_fallback_tap && self.tap_url.trim().is_empty() {
+            return Err(IrsaError::Config(
+                "IRSA_TAP_URL is empty while SIA_FALLBACK_TAP is on".into(),
+            ));
         }
         Ok(())
     }
