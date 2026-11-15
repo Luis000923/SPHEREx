@@ -22,7 +22,7 @@ SPHEREx Blink — a time-lapse window into the SPHEREx all-sky survey
 
 ## High-Level Project Summary
 
-<= 120 words. Current word count: **108** (limit 120) — recount after any
+<= 120 words. Current word count: **107** (limit 120) — recount after any
 edit; count the copy block below only.
 
 --- copy start ---
@@ -34,7 +34,7 @@ stars jump out visually. Blink, differencing and stacking modes compare
 epochs like-for-like; clicking any pixel assembles a spectrum from all
 exposures that cover it. Every view is a shareable, embeddable URL, and the
 five official challenge targets are built-in presets — verified on the real
-archive: we measured Barnard's Star's proper motion in-app. Planet-X-style
+archive, where Barnard's Star visibly moves north. Planet-X-style
 discovery, for anyone with a browser.
 --- copy end ---
 
@@ -62,7 +62,7 @@ Public link, no login/permission/registration.
 TODO(team): <deployed app URL>
 
 Optional embed URL for judges (iframe-ready, Barnard's Star preset —
-its motion is visibly measurable):
+its motion is visible across epochs):
 TODO(team): <deployed app URL>?embed=1&ra=17h57m47.102s&dec=%2B04d46m05.97s&fov=0.1
 --- copy end ---
 
@@ -123,15 +123,20 @@ real data offline from the baked image:
 | RW Aurigae | 24 / 18 (of 341 obs) | 0.76–4.73 µm | D1–D6 | 0.2–0.3 s |
 | R Draconis | 24 / 14 (of 565 obs) | 0.74–4.84 µm | D1–D6 | 0.2–0.3 s |
 
-A centroid fit over the real time series measures Barnard's Star's proper
-motion at 8.9″/yr north against the catalogue's 10.4″/yr, and Epsilon
-Indi B's at 3.3″/yr east and 2.7″/yr south against 4.0″/2.5″/yr — the
-app measures the effect it was built to show. WISE 0855, a Y dwarf, is
-genuinely faint for SPHEREx (3–7σ at best, invisible below ~3 µm): we
-could not detect it or its motion, and the app says so honestly rather
-than faking a detection. The single-container image is 177.9 MiB with the
-baked preset cache, builds in ~36 s, runs as non-root and passes a
-13-check smoke test. Gates: 194 Rust tests, 250 frontend unit tests, 62
+In our simple centroid tracking over the real time series, Barnard's
+Star moves north at about 9 arcsec per year (catalogue: 10.4 arcsec per
+year); the uncertainty is about 2 arcsec per year, and the diff mode
+shows the star as a clean bright/dark dipole. Epsilon Indi B is a
+binary brown dwarf (about 1.1 arcsec apart), unresolved at SPHEREx's
+6.15 arcsec/pixel — a one-click preset, but we did not obtain a reliable
+motion measurement. WISE 0855, a Y dwarf, is very faint for SPHEREx
+(3–7σ at best, invisible below ~3 µm) and not detected convincingly in
+raw frames; its motion (about 8 arcsec/yr, about 1.3 native pixels) is
+close to the pixel limit — the preset exists because the challenge asks
+to test it, and the app says so honestly rather than faking a
+detection. The single-container image is 177.9 MiB with the baked
+preset cache, builds in ~36 s, runs as non-root and passes a 13-check
+smoke test. Gates: 194 Rust tests, 250 frontend unit tests, 62
 Playwright end-to-end tests, all green.
 
 **Benefits.** It removes the two barriers between SPHEREx data and the

@@ -18,6 +18,7 @@ TODO(team): state accurately who defined the product idea. In this project Claud
 | End-to-end real-data QA (task `f10-real-data-qa`) | Claude Opus 5.5 agent | Drove the real product in Chrome against the final backend + baked cache; found and fixed 7 frontend defects with regression tests; produced `docs/screens-real/` and the measured numbers used in the submission texts; commits carry `Generated-by: Claude Opus 5.5 (SI-assisted)` | Claude + team review before merge |
 | Preset coordinate snap + serve-stale (task `b20-preset-snap-stale`) | Devin | Snap rounded/re-typed preset coordinates before cache lookup, serve-stale for aged search bodies, `SEARCH_DISK_TTL_SECS`; commits carry `Generated-by: Devin (SI-assisted)` | Claude + team review before merge |
 | Final submission texts (task `submission-final`) | Devin | Rewrote README, project page, checklist, demo outline/script and this file with only measured, verified facts; commits carry `Generated-by: Devin (SI-assisted)` | Claude + team review before merge |
+| Submission claims review (task `submission-claims-fix`) | Devin | Removed or softened over-precise proper-motion claims in README, project page, demo outline and video script so no claim exceeds the handoff/live-results evidence; commits carry `Generated-by: Devin (SI-assisted)` | Claude + team review before merge |
 
 SI-generated: essentially all application code, tests, Dockerfile/CI and
 documentation text. Not SI-generated: reported measurements and any

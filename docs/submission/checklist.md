@@ -8,7 +8,7 @@ is allowed until the deadline — submit early, then improve.
 ## Required form fields (all filled, all English)
 
 - [ ] Project Name — text in [`project-page.md`](project-page.md)
-- [ ] High-Level Project Summary — ≤ 120 words (current draft: 108)
+- [ ] High-Level Project Summary — ≤ 120 words (current draft: 107)
 - [ ] Link to Project Demo — public, no login
 - [ ] Link to Final Project — public, no login/permission/registration
 - [ ] Repository link — `TODO(team): <public repo URL>`; must be public

@@ -64,21 +64,25 @@ stack — moving sources announce themselves.
 
 ---
 
-## Slide 4 — It really works: measured proper motion
+## Slide 4 — It really works: the motion is real
 
-- Barnard's Star: measured **8.9″/yr north** in-app vs 10.4″/yr catalogue —
-  the diff frame shows the bright/dark dipole of a moving source.
-- Epsilon Indi B: measured **3.3″/yr east, 2.7″/yr south** vs 4.0/2.5″/yr
-  catalogue.
+- Barnard's Star moves north, about 9 arcsec per year in our simple
+  centroid tracking (catalogue: 10.4 arcsec per year); uncertainty about
+  2 arcsec per year. The diff frame shows the bright/dark dipole of a
+  moving source.
+- Epsilon Indi B is a binary brown dwarf (about 1.1 arcsec apart),
+  unresolved at SPHEREx's 6.15 arcsec/pixel — a one-click preset, but we
+  did not obtain a reliable motion measurement.
 - Honest counter-example: WISE 0855 (a Y dwarf) is only 3–7σ in single
   SPHEREx frames — we show it and say it is not detected, no faking.
 - Image: `../screens-real/barnards-star-1440-diff-after-fix-north-up.jpg`
   — the diff dipole of Barnard's Star (north up, east left).
 
-**Speaker notes (≈40 words):**
-This is not a mockup: the centroid drift of Barnard's Star measures 8.9
-arcseconds per year against a catalogue 10.4. WISE 0855 is genuinely too
-faint for single frames — the app reports that honestly.
+**Speaker notes (≈37 words):**
+This is not a mockup: in our centroid tracking Barnard's Star moves
+north about 9 arcseconds per year (catalogue 10.4, uncertainty about 2).
+WISE 0855 is too faint for single frames — the app reports that
+honestly.
 
 ---
 

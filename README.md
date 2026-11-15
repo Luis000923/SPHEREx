@@ -54,15 +54,15 @@ archive data (see [`docs/screens-real/`](docs/screens-real/) and
 
 The targets named by the challenge are one click away (header **Targets**
 menu or `GET /api/v1/targets`). Fast movers are stored at their position
-propagated to epoch 2026.0 (the J2000 catalogue positions are up to ~4′ off
+propagated to epoch 2026.0 (the J2000 catalogue positions are up to ~4.4′ off
 at SPHEREx epochs and would fall outside the field), and requests within
 0.3″ of a preset snap to its exact coordinates so the baked cache always
 hits:
 
 | Preset | RA (epoch 2026.0) | Dec | FOV | Note |
 |---|---|---|---|---|
-| Barnard's Star | `17h57m47.102s` | `+04d46m05.97s` | 0.1° | Fastest proper-motion star; motion measured in-app |
-| Epsilon Indi B | `22h04m23.201s` | `-56d48m02.34s` | 0.1° | Brown-dwarf binary; motion measured in-app |
+| Barnard's Star | `17h57m47.102s` | `+04d46m05.97s` | 0.1° | Fastest proper-motion star; moves north across epochs |
+| Epsilon Indi B | `22h04m23.201s` | `-56d48m02.34s` | 0.1° | Binary brown dwarf (~1.1″ apart), unresolved at SPHEREx's 6.15″/pixel; no reliable motion measurement |
 | WISE 0855 | `08h55m02.344s` | `-07d14m31.86s` | 0.1° | Y dwarf — genuinely faint in SPHEREx (see Limitations) |
 | RW Aurigae | `05h07m49.581s` | `+30d24m04.65s` | 0.05° | Young variable star |
 | R Draconis | `16h32m40.136s` | `+66d45m18.09s` | 0.05° | Carbon star; saturates the core in many frames |
@@ -236,11 +236,13 @@ Measured by end-to-end QA against the final image
 ([`docs/live-results/`](docs/live-results/), handoffs `b17`/`f10` in
 `docs/vault/handoffs/`):
 
-- **Proper motion is real and measurable.** Centroid fits over the raw
-  series: Barnard's Star moves **8.9″/yr north** (catalogue 10.4″/yr);
-  Epsilon Indi B moves **3.3″/yr east, 2.7″/yr south** (catalogue
-  4.0″/2.5″/yr). Diff mode shows Barnard's Star as a clean bright/dark
-  dipole.
+- **Proper motion is real and visible.** Barnard's Star moves north,
+  about 9 arcsec per year in our simple centroid tracking (catalogue:
+  10.4 arcsec per year); uncertainty about 2 arcsec per year. Diff mode
+  shows it as a clean bright/dark dipole. Epsilon Indi B is a binary
+  brown dwarf (about 1.1 arcsec apart), unresolved at SPHEREx's
+  6.15 arcsec/pixel; a one-click preset, but we did not obtain a
+  reliable motion measurement.
 - **First frame from the baked cache: 0.29–0.74 s** (headless browser,
   all five presets; 0.2–3.7 s at the API). The same fields cold through
   a struggling IRSA took ~1–13 min during the bake.
@@ -252,11 +254,17 @@ Measured by end-to-end QA against the final image
 
 ## Limitations (honest)
 
-- **WISE 0855 is faint and its motion is near the pixel-scale limit.**
-  It is only 3–7σ at 3.1–4.6 µm in single frames and invisible below
-  ~3 µm; we could not detect it or measure its ~8″/yr motion (native
-  pixel ~6.15″). The preset is kept because the challenge names it —
-  the app says the truth rather than faking a detection.
+- **WISE 0855 is very faint and its motion is near the pixel-scale
+  limit.** It is only 3–7σ at 3.1–4.6 µm in single frames, invisible
+  below ~3 µm, and not detected convincingly in raw frames. Its motion
+  (about 8 arcsec/yr, about 1.3 native pixels at 6.15 arcsec/pixel) is
+  close to the pixel limit, so we could not measure it. The preset
+  exists because the challenge asks to test it — the app says the truth
+  rather than faking a detection.
+- **R Draconis saturates.** Its core is flagged saturated and reads NaN
+  in 12 of the 24 selected frames (all D4, most D2 and D3), so the
+  centre spectrum is sparse there — a data limit the flag badges show
+  honestly.
 - **`diff`/`coadd` need comparable exposures** — the same detector at
   the same wavelength (within tolerance). Where the archive only has
   one epoch per band, those modes return few or no frames; that is a
