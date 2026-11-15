@@ -41,15 +41,9 @@
   padding: 0;
   list-style: none;
 }
+/* Flag badges use the shared .chip.chip-warn pill (base.css). */
 .md-badge {
-  padding: 0 var(--space-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: 1.375rem;
-  color: var(--warn);
-  border: var(--hairline) solid currentColor;
-  border-radius: var(--radius-pill);
-  white-space: nowrap;
+  max-width: 100%;
 }
 .md-legend {
   margin-top: var(--space-2);

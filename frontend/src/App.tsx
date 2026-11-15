@@ -51,7 +51,11 @@ import {
 import { fetchTargets } from "./lib/api";
 import { parseDecToDeg, parseRaToDeg } from "./lib/coords";
 import { makeMockFramesResponse } from "./lib/mock";
-import { PRESET_TARGETS, menuTargetsFromServer } from "./lib/presets";
+import {
+  PRESET_TARGETS,
+  menuTargetsFromServer,
+  type PresetTarget,
+} from "./lib/presets";
 import { isStretchKind, STRETCH_KINDS } from "./lib/stretch";
 import { COLORMAP_NAMES, isColormapName } from "./lib/colormaps";
 import { MODE_LABELS, type FramesResponse } from "./lib/types";
@@ -110,6 +114,42 @@ function GroupChevron() {
         strokeLinejoin="round"
       />
     </svg>
+  );
+}
+
+// The preset whose position is being viewed, if any: exact string match
+// with presets.ts, or within 2 arcsec once parsed (typed variants of the
+// same position). Display only; it never changes the query.
+export function activePreset(ra: string, dec: string): PresetTarget | null {
+  const raDeg = parseRaToDeg(ra);
+  const decDeg = parseDecToDeg(dec);
+  for (const p of PRESET_TARGETS) {
+    if (p.ra === ra && p.dec === dec) return p;
+    if (raDeg === null || decDeg === null) continue;
+    const pRa = parseRaToDeg(p.ra);
+    const pDec = parseDecToDeg(p.dec);
+    if (pRa === null || pDec === null) continue;
+    let dRa = Math.abs(raDeg - pRa);
+    if (dRa > 180) dRa = 360 - dRa;
+    const dRaCos = dRa * Math.cos((pDec * Math.PI) / 180);
+    const sepArcsec = Math.hypot(dRaCos, decDeg - pDec) * 3600;
+    if (sepArcsec <= 2) return p;
+  }
+  return null;
+}
+
+// Pill chip naming the active preset target (all presets are epoch-2026.0
+// positions, see lib/presets.ts).
+function ActiveTargetChip({ target }: { target: PresetTarget }) {
+  return (
+    <p className="app-target">
+      <span className="chip">
+        <span className="visually-hidden">Active target: </span>
+        <span className="chip-label">
+          {target.label.toUpperCase()} · EPOCH 2026.0
+        </span>
+      </span>
+    </p>
   );
 }
 
@@ -395,6 +435,11 @@ export function App(props: AppProps) {
     return { raDeg, decDeg, fovDeg: q?.fov_deg ?? url.fov };
   }, [q, url.ra, url.dec, url.fov]);
 
+  const preset = useMemo(
+    () => activePreset(url.ra, url.dec),
+    [url.ra, url.dec],
+  );
+
   const panel = (
     <div className="app-controls">
       <details className="app-group" open>
@@ -506,11 +551,14 @@ export function App(props: AppProps) {
       notice={<FirstRunHint />}
       credit={<EmbedCredit />}
       search={
-        <CoordinateSearchBar
-          value={{ ra: url.ra, dec: url.dec, fov: url.fov }}
-          loading={framesResult.status === "loading"}
-          onSubmit={submitCoords}
-        />
+        <>
+          <CoordinateSearchBar
+            value={{ ra: url.ra, dec: url.dec, fov: url.fov }}
+            loading={framesResult.status === "loading"}
+            onSubmit={submitCoords}
+          />
+          {preset !== null ? <ActiveTargetChip target={preset} /> : null}
+        </>
       }
       panel={panel}
       drawer={

@@ -14,6 +14,9 @@
 - WiseView (inspiration only): http://byw.tools/wiseview
 - SIMBAD astronomical database, CDS, queried via TAP for preset-target positions, proper motions, parallaxes and bibliographic references: https://simbad.cds.unistra.fr/ (TAP: https://simbad.cds.unistra.fr/simbad/sim-tap; mirror used 2026-11-14: https://simbad.cfa.harvard.edu/simbad/sim-tap)
 
+## Design
+- Visual brand: AirmanPrep (the team's brand), https://airmanprep.com/ (palette, type and component style read from the live site's computed CSS on 2026-11-15). The SPHEREx Blink mark and favicon are original drawings, not the AirmanPrep logo.
+
 ## Challenge
 - Planet X and SPHEREx, NASA Space Apps 2026: https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/
 
@@ -337,6 +340,8 @@ License notes:
 - @eslint/js 9.15.0 (MIT)
 - @eslint/object-schema 2.1.7 (Apache-2.0)
 - @eslint/plugin-kit 0.2.8 (Apache-2.0)
+- @fontsource/ibm-plex-mono 5.3.0 (OFL-1.1; IBM Plex Mono, Copyright IBM Corp.; bundled latin 400/500 woff2): https://fontsource.org/fonts/ibm-plex-mono
+- @fontsource/ibm-plex-sans 5.3.0 (OFL-1.1; IBM Plex Sans, Copyright IBM Corp.; bundled latin 400/600 woff2): https://fontsource.org/fonts/ibm-plex-sans
 - @humanfs/core 0.19.2 (Apache-2.0)
 - @humanfs/node 0.16.8 (Apache-2.0)
 - @humanfs/types 0.15.0 (Apache-2.0)

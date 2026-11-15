@@ -81,7 +81,7 @@ function buildChart(
   // the stylesheet is missing (tests).
   const fg = cssVar(el, "--fg-dim", "gray");
   const grid = cssVar(el, "--border", "gray");
-  const accent = cssVar(el, "--accent", "steelblue");
+  const accent = cssVar(el, "--accent-ink", "steelblue");
   const bandFill = cssVar(el, "--band-fill", "transparent");
   const bandStroke = cssVar(el, "--band-stroke", "gray");
   const family = cssVar(el, "--font-sans", "sans-serif");

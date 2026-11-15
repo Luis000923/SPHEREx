@@ -13,6 +13,7 @@
   color: var(--fg);
   font-size: var(--text-sm);
   animation: sp-in var(--dur-2) var(--ease);
+  /* Opening easing uses the brand "out" curve (--ease). */
 }
 
 @keyframes sp-in {
@@ -125,7 +126,7 @@
   padding: var(--space-4);
   text-align: center;
   border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-m);
+  border-radius: var(--radius-l);
 }
 .sp-skel {
   align-self: stretch;
@@ -185,9 +186,10 @@
   flex-wrap: wrap;
 }
 .sp-flags-label {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-eyebrow);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-micro);
-  font-weight: var(--weight-strong);
 }
 .sp-cite {
   margin-left: auto;
@@ -213,7 +215,7 @@
   color: var(--fg);
   background: var(--bg-raised);
   border: var(--hairline) solid var(--border-strong);
-  border-radius: var(--radius-s);
+  border-radius: var(--radius-m);
   box-shadow: var(--shadow);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;

@@ -1,47 +1,68 @@
-/* Design tokens for SPHEREx Blink: a calm scientific instrument where the
-   sky image is the hero. Dark neutral palette by default, a light palette
-   of equal quality under prefers-color-scheme, one accent (primary action
-   and active state only), semantic colors only for data states.
-   Every color used by the app comes from these variables; the contrast of
-   each text/background pair is asserted in tests/layout/tokens.test.ts. */
+/* Design tokens for SPHEREx Blink, in the AirmanPrep team brand: a dark
+   carbon instrument (default, best for a sky viewer), warm paper surfaces
+   in the light scheme, one lime accent (primary action and active state),
+   semantic colours only for data states. The sky image area stays a
+   neutral dark grey in both schemes so real data is never tinted.
+   Every colour used by the app comes from these variables; the contrast
+   of each text/background and UI pair is asserted in
+   tests/layout/tokens.test.ts.
+
+   Accent roles (never mix them):
+   - --accent        lime FILL (Go, Retry, dots). Text on it: --accent-fg.
+   - --accent-ink    accent as TEXT, lines and borders. Lime on dark;
+                     brand-deep #466004 on light, because lime is never
+                     used as text on light surfaces. */
 :root {
   color-scheme: dark light;
 
-  /* Typography: system stacks, 4-step scale (12 / 14 / 16 / 20 px),
-     weights 400 and 600 only. Numbers use tabular figures. */
+  /* Typography: IBM Plex Sans 400/600 (UI) and IBM Plex Mono 400/500
+     (eyebrow labels, coordinates, wavelengths, dates, numbers), bundled
+     from @fontsource
+     (fonts.css, latin subset, font-display: swap) with system fallbacks.
+     4-step scale (12 / 14 / 16 / 20 px); numbers use tabular figures. */
   --font-sans:
-    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-    sans-serif;
+    "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
   --font-mono:
-    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
-  --text-xs: 0.75rem; /* 12px: micro-labels, captions, overlay */
+    "IBM Plex Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo,
+    Consolas, "Liberation Mono", monospace;
+  --text-xs: 0.75rem; /* 12px: eyebrow labels, captions, chips */
   --text-sm: 0.875rem; /* 14px: body and controls */
   --text-md: 1rem; /* 16px: emphasis, mobile inputs (no iOS zoom) */
   --text-lg: 1.25rem; /* 20px: state titles */
   --weight-regular: 400;
+  --weight-medium: 500; /* mono eyebrow labels and chips only */
   --weight-strong: 600;
   --leading: 1.5;
   --tracking-micro: 0.06em;
+  --tracking-eyebrow: 0.08em; /* mono uppercase eyebrow labels */
+  --tracking-title: -0.01em; /* 600 headings */
 
-  /* Spacing: 4/8 px grid */
+  /* Spacing: 4/8 px grid (4 8 12 16 24 32 48 64) */
   --space-1: 0.25rem; /* 4 */
   --space-2: 0.5rem; /* 8 */
   --space-3: 0.75rem; /* 12 */
   --space-4: 1rem; /* 16 */
   --space-5: 1.5rem; /* 24 */
   --space-6: 2rem; /* 32 */
+  --space-7: 3rem; /* 48 */
+  --space-8: 4rem; /* 64 */
 
-  /* Shape */
+  /* Shape: radii 4 / 8 / 12 / 20 / pill */
   --radius-s: 0.25rem;
   --radius-m: 0.5rem;
+  --radius-l: 0.75rem;
+  --radius-xl: 1.25rem;
   --radius-pill: 999px;
   --hairline: 1px;
+  --dot: 0.4375rem; /* 7px chip dot */
 
-  /* Motion: 120-200 ms, removed under prefers-reduced-motion (base.css) */
+  /* Motion: 120-200 ms with the brand curves, removed under
+     prefers-reduced-motion (base.css). */
   --dur-1: 120ms;
   --dur-2: 180ms;
-  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1); /* out */
+  --ease-soft: cubic-bezier(0.65, 0, 0.35, 1);
 
   /* Layout metrics */
   --target: 2.75rem; /* 44px minimum touch target */
@@ -53,56 +74,93 @@
   --drawer-h: clamp(18rem, 36dvh, 24rem); /* spectrum drawer under it */
   --plot-min-h: 15rem; /* 240px spectrum chart floor */
 
-  /* Colors: dark scheme (default) */
-  --bg: #0b0d10;
-  --bg-raised: #111418;
-  --bg-inset: #07090b;
-  --bg-hover: #1a1e24;
-  --fg: #e6e8eb;
-  --fg-dim: #a2a9b3;
-  --fg-faint: #858d98;
-  --border: #22272e; /* hairline (decorative only) */
-  /* Interactive boundaries (inputs, segmented groups, pills): >= 3:1 on
-     every surface per WCAG 1.4.11; asserted in tokens.test.ts. */
-  --border-strong: #66707d;
-  --accent: #8ab4f8;
-  --accent-fg: #0b0d10; /* text on accent */
-  --accent-soft: #1c2a40; /* active state background */
-  --danger: #f28b82;
-  --warn: #fdc970;
-  --focus: #8ab4f8;
-  --shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.5);
-  --band-fill: rgb(138 180 248 / 0.1);
-  --band-stroke: rgb(138 180 248 / 0.32);
-  --skel-hi: #161a1f;
+  /* Colours: dark scheme (default). Carbon base, warm-neutral raised
+     steps, cream ink, lime accent. */
+  --bg: #212121;
+  --bg-raised: #2a2a27;
+  --bg-inset: #1a1a19;
+  --bg-hover: #353530;
+  --fg: #f4f3ec;
+  --fg-dim: #c2c0b3;
+  --fg-faint: #a3a194;
+  --border: #3a3a35; /* hairline (decorative only) */
+  /* Interactive boundaries (inputs, segmented groups, ghost buttons):
+     >= 3:1 on every surface per WCAG 1.4.11; asserted in tokens.test.ts. */
+  --border-strong: #85837a;
+  --accent: #aedc22;
+  --accent-hover: #9fcb1c;
+  --accent-line: #466004; /* 1px darker-lime outline of lime fills */
+  --accent-fg: #212121; /* text on lime */
+  --accent-ink: #aedc22; /* accent as text/lines: lime is fine on carbon */
+  --accent-soft: #3a4419; /* lime tint: active segment, hint pill */
+  --link: #c3e45a;
+  --danger: #f0937a;
+  --danger-soft: #4a2a20;
+  --warn: #e9b949;
+  --warn-soft: #3d3220;
+  --ok: #6cc8cf;
+  --ok-soft: #1d3a3c;
+  --focus: #6aaee8; /* lighter variant of #0b5cad, >= 3:1 on carbon */
+  --chip-bg: #2a2a27;
+  --chip-fg: #f4f3ec;
+  --glow: rgb(174 220 34 / 0.09); /* header / empty-state radial glow */
+  /* Floating layers: on carbon a subtle border carries the edge and the
+     shadow stays soft. */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow: 0 4px 14px rgb(0 0 0 / 0.35);
+  --shadow-lg: 0 24px 60px rgb(0 0 0 / 0.45);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3); /* docked cards: border first */
+  --band-fill: rgb(174 220 34 / 0.08);
+  --band-stroke: rgb(174 220 34 / 0.3);
+  --skel-hi: #2f2f2c;
+
+  /* The sky image area: neutral grey, no warm cast, same in both schemes
+     (the image is data and must not be tinted by the theme). */
+  --stage: #1b1b1b;
+  --stage-fg: #b4b4b4;
 
   /* Scrim + text drawn over the sky image. The image is data with any
      brightness, so these stay dark/light in both schemes. */
   --scrim: rgb(0 0 0 / 0.7);
-  --scrim-fg: #f2f4f7;
-  --scrim-warn: #fdc970;
+  --scrim-fg: #f4f3ec;
+  --scrim-warn: #e9b949;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f7f8fa;
-    --bg-raised: #ffffff;
-    --bg-inset: #eef0f3;
-    --bg-hover: #e9ecf0;
-    --fg: #14171c;
-    --fg-dim: #4b525c;
-    --fg-faint: #656c77;
-    --border: #e0e3e8;
-    --border-strong: #788089;
-    --accent: #2858b8;
-    --accent-fg: #ffffff;
-    --accent-soft: #e3ebfa;
-    --danger: #b3261e;
-    --warn: #8a5300;
-    --focus: #2858b8;
-    --shadow: 0 0.5rem 1.5rem rgb(20 23 28 / 0.14);
-    --band-fill: rgb(40 88 184 / 0.08);
-    --band-stroke: rgb(40 88 184 / 0.3);
-    --skel-hi: #f7f8fa;
+    /* Warm paper surfaces, ink text; lime only as a fill. */
+    --bg: #f4f3ec;
+    --bg-raised: #fbfaf5;
+    --bg-inset: #eceade;
+    --bg-hover: #e8e6d9;
+    --fg: #2b2b26;
+    --fg-dim: #58584d;
+    --fg-faint: #5f5f55;
+    --border: #dcdacc;
+    --border-strong: #838272;
+    --accent: #aedc22;
+    --accent-hover: #9fcb1c;
+    --accent-line: #466004;
+    --accent-fg: #212121;
+    --accent-ink: #466004; /* brand-deep: lime as text on light */
+    --accent-soft: #e8f3bf;
+    --link: #1f5f8f;
+    --danger: #a9361a;
+    --danger-soft: #f6ddd4;
+    --warn: #7c5200;
+    --warn-soft: #f3e6bf;
+    --ok: #0b6670;
+    --ok-soft: #d9eef0;
+    --focus: #0b5cad;
+    --chip-bg: #fbfaf5;
+    --chip-fg: #2b2b26;
+    --glow: rgb(174 220 34 / 0.11);
+    --shadow-sm: 0 1px 2px rgb(43 43 38 / 0.08);
+    --shadow: 0 4px 14px rgb(43 43 38 / 0.1);
+    --shadow-lg: 0 24px 60px rgb(43 43 38 / 0.16);
+    --shadow-card: 0 4px 14px rgb(43 43 38 / 0.1);
+    --band-fill: rgb(70 96 4 / 0.07);
+    --band-stroke: rgb(70 96 4 / 0.32);
+    --skel-hi: #f4f3ec;
   }
 }

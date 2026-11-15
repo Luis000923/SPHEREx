@@ -285,6 +285,16 @@ export function AboutDialog() {
           {/* TODO(team): repository link once the remote is public. */}
           <p>Open source, Apache-2.0</p>
           <p>Built for the NASA Space Apps Challenge 2026</p>
+          <p>
+            Design:{" "}
+            <a
+              href="https://airmanprep.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              AirmanPrep
+            </a>
+          </p>
         </div>
       </dialog>
     </>

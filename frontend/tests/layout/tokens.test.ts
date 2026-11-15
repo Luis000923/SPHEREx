@@ -59,40 +59,47 @@ export function contrast(a: Rgb, b: Rgb): number {
 }
 
 // Text on surfaces (4.5:1, normal-size text).
+const SURFACES = ["bg", "bg-raised", "bg-inset", "bg-hover"] as const;
 const TEXT_PAIRS: Array<[string, string]> = [
-  ["fg", "bg"],
-  ["fg", "bg-raised"],
-  ["fg", "bg-inset"],
-  ["fg", "bg-hover"],
-  ["fg-dim", "bg"],
-  ["fg-dim", "bg-raised"],
-  ["fg-dim", "bg-inset"],
-  ["fg-dim", "bg-hover"],
-  ["fg-faint", "bg"],
-  ["fg-faint", "bg-raised"],
-  ["fg-faint", "bg-inset"],
+  ...SURFACES.map((b): [string, string] => ["fg", b]),
+  ...SURFACES.map((b): [string, string] => ["fg-dim", b]),
+  ...SURFACES.map((b): [string, string] => ["fg-faint", b]),
+  // Lime fills (Go, Retry) and their hover: carbon text on lime.
   ["accent-fg", "accent"],
+  ["accent-fg", "accent-hover"],
+  // Active segment / hint pill (lime tint).
   ["fg", "accent-soft"],
-  ["accent", "accent-soft"],
-  ["accent", "bg"],
-  ["accent", "bg-raised"],
+  ["accent-ink", "accent-soft"],
+  // Accent as text (pressed transport, inline Retry): lime on carbon,
+  // brand-deep on paper.
+  ...SURFACES.map((b): [string, string] => ["accent-ink", b]),
+  ["link", "bg"],
+  ["link", "bg-raised"],
+  // Semantic colours on surfaces and on their own tints.
   ["danger", "bg"],
   ["danger", "bg-raised"],
   ["danger", "bg-inset"],
+  ["danger", "danger-soft"],
   ["warn", "bg"],
   ["warn", "bg-raised"],
+  ["warn", "warn-soft"], // flag chips
+  ["ok", "bg"],
+  ["ok", "bg-raised"],
+  ["ok", "ok-soft"],
+  // Chip labels (active target) and the empty-stage message.
+  ["chip-fg", "chip-bg"],
+  ["stage-fg", "stage"],
 ];
 
 // Non-text UI that must be perceivable (3:1): focus ring, slider thumb,
+// accent lines (chart line, focused input border, active segment ring)
 // and the borders of interactive controls on every surface (WCAG 1.4.11).
 const UI_PAIRS: Array<[string, string]> = [
-  ["focus", "bg"],
-  ["focus", "bg-raised"],
+  ...SURFACES.map((b): [string, string] => ["focus", b]),
   ["fg", "bg"], // slider thumb
-  ["border-strong", "bg"],
-  ["border-strong", "bg-raised"],
-  ["border-strong", "bg-inset"],
-  ["border-strong", "bg-hover"],
+  ...SURFACES.map((b): [string, string] => ["border-strong", b]),
+  ...SURFACES.map((b): [string, string] => ["accent-ink", b]),
+  ["accent-ink", "accent-soft"],
 ];
 
 describe.each([
@@ -104,6 +111,36 @@ describe.each([
   });
   it.each(UI_PAIRS)("%s on %s >= 3:1", (fg, bg) => {
     expect(contrast(hex(t.get(fg)), hex(t.get(bg)))).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("brand palette (AirmanPrep)", () => {
+  it("dark default is carbon with cream text and lime accent", () => {
+    expect(DARK.get("bg")).toBe("#212121");
+    expect(DARK.get("fg")).toBe("#f4f3ec");
+    expect(DARK.get("accent")).toBe("#aedc22");
+    expect(DARK.get("accent-fg")).toBe("#212121");
+    expect(DARK.get("accent-hover")).toBe("#9fcb1c");
+  });
+  it("light scheme uses paper, ink and brand-deep for accent text", () => {
+    expect(LIGHT.get("bg")).toBe("#f4f3ec");
+    expect(LIGHT.get("bg-raised")).toBe("#fbfaf5");
+    expect(LIGHT.get("fg")).toBe("#2b2b26");
+    expect(LIGHT.get("accent-ink")).toBe("#466004");
+    expect(LIGHT.get("focus")).toBe("#0b5cad");
+    expect(LIGHT.get("link")).toBe("#1f5f8f");
+  });
+  it("lime as text would fail on paper, which is why accent-ink exists", () => {
+    expect(contrast(hex(LIGHT.get("accent")), hex(LIGHT.get("bg")))).toBeLessThan(
+      3,
+    );
+  });
+  it("the image stage is a neutral grey (no warm/cool cast) in both schemes", () => {
+    for (const t of [DARK, LIGHT]) {
+      const [r, g, b] = hex(t.get("stage"));
+      expect(r).toBe(g);
+      expect(g).toBe(b);
+    }
   });
 });
 
@@ -129,6 +166,7 @@ describe("tokens only", () => {
     "components/spectrum/spectrum.css",
     "components/metadata/metadata.css",
     "components/overlays/overlays.css",
+    "components/about/about.css",
   ];
   it.each(files)("%s has no literal colors", (f) => {
     const css = readFileSync(`${SRC}${f}`, "utf8").replace(
@@ -137,6 +175,15 @@ describe("tokens only", () => {
     );
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(css).not.toMatch(/\brgba?\(/i);
+  });
+
+  // Lime is a fill colour: as text/lines component CSS must use
+  // --accent-ink (lime on carbon, #466004 on paper).
+  it.each(files)("%s never uses lime (--accent) as text or border", (f) => {
+    const css = readFileSync(`${SRC}${f}`, "utf8");
+    expect(css).not.toMatch(/(^|[^-])color:\s*var\(--accent\)/m);
+    expect(css).not.toMatch(/border(-[a-z]+)?(-color)?:[^;]*var\(--accent\)/);
+    expect(css).not.toMatch(/outline(-color)?:[^;]*var\(--accent\)/);
   });
 
   it("uses the 4-step type scale only (12/14/16/20 px)", () => {

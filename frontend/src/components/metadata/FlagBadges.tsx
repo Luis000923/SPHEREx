@@ -31,7 +31,7 @@ export function FlagBadges({ flags, legend }: FlagBadgesProps) {
         return (
           <li
             key={`${f}-${i}`}
-            className="md-badge"
+            className="chip chip-warn md-badge"
             title={bit === null ? f : `${f} (bit ${bit})`}
           >
             {f}

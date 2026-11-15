@@ -50,21 +50,25 @@ export function AppShell(props: AppShellProps) {
     <div className="app">
       <header className="app-header">
         <h1 className="app-title">
+          {/* Original mark: a tilted orbit around a small lime body. */}
           <svg
             className="app-mark"
-            viewBox="0 0 16 16"
+            viewBox="0 0 22 22"
             aria-hidden="true"
             focusable="false"
           >
-            <circle
-              cx="8"
-              cy="8"
-              r="6"
+            <ellipse
+              cx="11"
+              cy="11"
+              rx="9.25"
+              ry="4.25"
+              transform="rotate(-24 11 11)"
               fill="none"
               stroke="currentColor"
-              strokeWidth="1.5"
+              strokeWidth="1.25"
             />
-            <circle cx="8" cy="8" r="2" fill="currentColor" />
+            <circle className="app-mark-body" cx="11" cy="11" r="4" />
+            <circle cx="18.6" cy="6.4" r="1.4" fill="currentColor" />
           </svg>
           SPHEREx Blink
         </h1>

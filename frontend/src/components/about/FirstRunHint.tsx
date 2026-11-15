@@ -47,8 +47,10 @@ export function FirstRunHint() {
   return (
     <p className="app-hint" role="note">
       <span className="app-hint-text">
-        Press play, or click the image to see its spectrum. About explains
-        the modes.
+        <span className="app-hint-label">
+          Press play, or click the image to see its spectrum. About explains
+          the modes.
+        </span>
       </span>
       <button
         type="button"

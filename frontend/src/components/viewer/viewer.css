@@ -23,9 +23,10 @@
   flex: 1 1 auto;
   width: 100%;
   min-height: 0;
-  background: var(--bg-inset);
+  /* Neutral grey in both schemes: the image is data, never tinted. */
+  background: var(--stage);
   border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-m);
+  border-radius: var(--radius-l);
   overflow: hidden;
 }
 .tl-canvas {
@@ -57,7 +58,7 @@
   line-height: 1.5rem;
   color: var(--scrim-fg);
   background: var(--scrim);
-  border-radius: var(--radius-s);
+  border-radius: var(--radius-pill);
   white-space: nowrap;
 }
 .tl-flag {
@@ -71,7 +72,7 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--fg-faint);
+  color: var(--stage-fg);
   font-size: var(--text-sm);
 }
 
@@ -130,11 +131,11 @@
   border-color: var(--border-strong);
 }
 .tl-btn[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-ink);
   background: var(--accent-soft);
 }
 .tl-btn-play[aria-pressed="true"] {
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
 }
 .tl-scrubber {
   flex: 1 1 8rem;

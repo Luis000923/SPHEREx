@@ -12,29 +12,39 @@ export function EmptyState(props: EmptyStateProps) {
     hint = "Enter RA/Dec above or pick a target to load a SPHEREx time-lapse.",
   } = props;
   return (
-    <div className="state">
+    <div className="state state-empty">
       <div className="state-inner">
+        {/* Thin dotted trajectory ending at a small body inside a reticle:
+            the brand's "flight path" decoration, drawn as a sky track. */}
         <svg
           className="state-icon"
-          viewBox="0 0 48 48"
+          viewBox="0 0 120 64"
           aria-hidden="true"
           focusable="false"
         >
-          <circle
-            cx="24"
-            cy="24"
-            r="15"
+          <path
+            className="state-trail"
+            d="M4 58C30 54 58 44 80 30"
             fill="none"
             stroke="currentColor"
-            strokeWidth="2"
-          />
-          <circle cx="24" cy="24" r="3" fill="currentColor" />
-          <path
-            d="M24 3v8M24 37v8M3 24h8M37 24h8"
-            stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.5"
             strokeLinecap="round"
           />
+          <circle
+            cx="92"
+            cy="24"
+            r="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M92 4v6M92 38v6M72 24h6M106 24h6"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+          <circle className="state-body" cx="92" cy="24" r="4" strokeWidth="1" />
         </svg>
         <p className="state-title">{title}</p>
         <p className="state-hint">{hint}</p>
@@ -86,7 +96,11 @@ export function ErrorState(props: ErrorStateProps) {
         </svg>
         <p className="state-title">Could not load frames</p>
         <p className="state-hint">{message}</p>
-        <button type="button" className="state-retry" onClick={onRetry}>
+        <button
+          type="button"
+          className="btn-primary state-retry"
+          onClick={onRetry}
+        >
           Retry
         </button>
       </div>
