@@ -23,7 +23,6 @@ export function SkyExplorer(props: SkyExplorerProps) {
   const { apiBase = null, mockData, embed: embedProp } = props;
   const [url, setUrl] = useUrlState();
   const embed = embedProp ?? url.embed;
-  const [detector, setDetector] = useState<number | null>(null);
   const [local, setLocal] = useState({ playing: false, loop: true, blink: false });
 
   const framesResult = useFrames(
@@ -33,8 +32,8 @@ export function SkyExplorer(props: SkyExplorerProps) {
       dec: url.dec,
       fov: url.fov,
       mode: url.mode,
-      detector,
-      maxFrames: 60,
+      detector: url.det,
+      // max_frames omitted: the contract default (24) is the pre-warmed set.
     },
     mockData,
   );
@@ -75,10 +74,11 @@ export function SkyExplorer(props: SkyExplorerProps) {
           />
           <ModeSelector
             mode={url.mode}
-            detector={detector}
+            detector={url.det}
             onChange={(p) => {
               if (p.mode !== undefined) setUrl({ mode: p.mode, frame: 0 });
-              if (p.detector !== undefined) setDetector(p.detector);
+              if (p.detector !== undefined)
+                setUrl({ det: p.detector, frame: 0 });
             }}
           />
           <div className="sx-display">
@@ -121,12 +121,21 @@ export function SkyExplorer(props: SkyExplorerProps) {
       ) : null}
       {framesResult.status === "error" ? (
         <p className="sx-error" role="alert">
-          {framesResult.error}
+          {framesResult.errorCode === "not_found"
+            ? "No SPHEREx observations cover this position yet."
+            : framesResult.errorCode === "upstream_unavailable"
+              ? "The NASA archive is not answering right now."
+              : framesResult.error}
         </p>
       ) : null}
       {framesResult.status === "loading" ? (
         <p className="sx-status" role="status">
           Loading frames…
+        </p>
+      ) : null}
+      {framesResult.pending === true && framesResult.status === "success" ? (
+        <p className="sx-status" role="status">
+          Loading more frames… {framesResult.frames.length} so far
         </p>
       ) : null}
       <TimeLapseCanvas
@@ -139,6 +148,7 @@ export function SkyExplorer(props: SkyExplorerProps) {
         transport={transport}
         onTransport={onTransport}
         embed={embed}
+          signed={url.mode === "diff"}
       />
       {!embed && framesResult.response?.truncated === true ? (
         <p className="sx-status">

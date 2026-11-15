@@ -24,6 +24,7 @@ describe("parseUrlState", () => {
       fps: 12,
       frame: 7,
       embed: true,
+      det: null,
     });
   });
   it("accepts sexagesimal coordinates", () => {
@@ -52,5 +53,20 @@ describe("parseUrlState", () => {
   });
   it("omits defaults on serialize", () => {
     expect(serializeUrlState(DEFAULT_URL_STATE)).toBe("");
+  });
+});
+
+// The detector filter lives in the URL as `det` so a shared link keeps it.
+describe("detector filter in the URL", () => {
+  it("parses det=1..6 and rejects anything else", () => {
+    expect(parseUrlState("?det=3").det).toBe(3);
+    for (const bad of ["0", "7", "2.5", "x", ""]) {
+      expect(parseUrlState(`?det=${bad}`).det).toBeNull();
+    }
+  });
+  it("round-trips", () => {
+    const st = { ...parseUrlState("?ra=10&dec=20"), det: 5 };
+    expect(parseUrlState(serializeUrlState(st))).toEqual(st);
+    expect(serializeUrlState({ ...st, det: null })).not.toContain("det=");
   });
 });

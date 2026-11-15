@@ -24,7 +24,9 @@ describe("pixelToSky", () => {
 
   it("applies the CD matrix (negative RA slope)", () => {
     const sky = pixelToSky(wcs, 59, 49); // +10 px in x
-    expect(sky!.ra_deg).toBeCloseTo(133.795129 - 0.01, 6);
+    // TAN: an RA offset on the sky is xi / cos(dec).
+    const cosDec = Math.cos((-7.245147 * Math.PI) / 180);
+    expect(sky!.ra_deg).toBeCloseTo(133.795129 - 0.01 / cosDec, 6);
     expect(sky!.dec_deg).toBeCloseTo(-7.245147, 6);
   });
 
@@ -77,6 +79,32 @@ describe("clientPointToPixel", () => {
     });
   });
 
+  // f10 regression: the canvas is drawn with `object-fit: contain`, so a
+  // square cutout in a wide stage is letterboxed. Mapping over the whole
+  // element rect put an off-centre click ~14 px (26") off in x on real data.
+  it("accounts for object-fit: contain letterboxing (wide rect)", () => {
+    const wide = { left: 0, top: 0, width: 1118, height: 823 };
+    const side = 823;
+    const x0 = (1118 - side) / 2;
+    const p = clientPointToPixel(wide, x0 + side * (150.5 / 192), side * (96.5 / 192), 192, 192);
+    expect(p?.x).toBeCloseTo(150.5, 6);
+    expect(p?.y).toBeCloseTo(96.5, 6);
+    expect(clientPointToPixel(wide, 1118 / 2, 823 / 2, 192, 192)).toEqual({ x: 96, y: 96 });
+  });
+
+  it("accounts for letterboxing in a tall rect", () => {
+    const tall = { left: 5, top: 10, width: 300, height: 500 };
+    const p = clientPointToPixel(tall, 5 + 300, 10 + 100 + 300, 192, 192);
+    expect(p?.x).toBeCloseTo(192, 6);
+    expect(p?.y).toBeCloseTo(192, 6);
+  });
+
+  it("returns null for clicks in the letterbox bars", () => {
+    const wide = { left: 0, top: 0, width: 1118, height: 823 };
+    expect(clientPointToPixel(wide, 10, 400, 192, 192)).toBeNull();
+    expect(clientPointToPixel(wide, 1110, 400, 192, 192)).toBeNull();
+  });
+
   it("returns null on degenerate rects and sizes", () => {
     expect(
       clientPointToPixel({ ...rect, width: 0 }, 0, 0, 400, 200),
@@ -105,7 +133,42 @@ describe("canvasPickToSky", () => {
     // one pixel past crpix=50 -> 1 * 0.001 deg offset.
     const sky = canvasPickToSky(canvas, 100, 100, wcs, 100, 100);
     expect(sky).not.toBeNull();
-    expect(sky!.ra_deg).toBeCloseTo(133.795129 - 0.001, 6);
-    expect(sky!.dec_deg).toBeCloseTo(-7.245147 + 0.001, 6);
+    const cosDec = Math.cos((-7.245147 * Math.PI) / 180);
+    expect(sky!.ra_deg).toBeCloseTo(133.795129 - 0.001 / cosDec, 5);
+    expect(sky!.dec_deg).toBeCloseTo(-7.245147 + 0.001, 5);
+  });
+});
+
+// Regression: pixelToSky used to add CD offsets to RA directly. On the sky
+// an RA offset is xi / cos(dec), so at R Draconis (dec +66.75) a click 10 px
+// east was placed 2.5x too close to the centre in RA and the spectrum came
+// from the wrong star. WCS below matches what the backend sends: cd22 < 0,
+// row 0 is north.
+describe("pixelToSky TAN inverse at high declination", () => {
+  const scale = 0.05 / 120;
+  const wcs = {
+    crpix: [60.5, 60.5] as [number, number],
+    crval: [248.1675, 66.75472] as [number, number],
+    cd: [
+      [-scale, 0],
+      [0, -scale],
+    ] as [[number, number], [number, number]],
+  };
+  it("scales RA offsets by 1/cos(dec)", () => {
+    // 0-based x = 49.5 is 10 px left of crpix (east, cd11 < 0).
+    const p = pixelToSky(wcs, 49.5, 59.5);
+    expect(p).not.toBeNull();
+    if (p === null) return;
+    const dRaCosDec =
+      (p.ra_deg - wcs.crval[0]) * Math.cos((p.dec_deg * Math.PI) / 180);
+    expect(dRaCosDec).toBeCloseTo(10 * scale, 7);
+    expect(p.dec_deg).toBeCloseTo(wcs.crval[1], 5);
+  });
+  it("row 0 is north when cd22 < 0", () => {
+    const top = pixelToSky(wcs, 59.5, 0);
+    const bottom = pixelToSky(wcs, 59.5, 119);
+    expect(top !== null && bottom !== null).toBe(true);
+    if (top === null || bottom === null) return;
+    expect(top.dec_deg).toBeGreaterThan(bottom.dec_deg);
   });
 });

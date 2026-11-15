@@ -17,6 +17,8 @@ export interface UrlState {
   fps: number;
   frame: number;
   embed: boolean;
+  /** Detector filter 1-6 (`det`), null = all detectors. */
+  det: number | null;
 }
 
 export const DEFAULT_URL_STATE: UrlState = {
@@ -29,6 +31,7 @@ export const DEFAULT_URL_STATE: UrlState = {
   fps: 5,
   frame: 0,
   embed: false,
+  det: null,
 };
 
 export const FPS_MIN = 1;
@@ -37,6 +40,7 @@ export const FPS_MAX = 30;
 const fovSchema = z.number().refine(isValidFov);
 const fpsSchema = z.number().int().min(FPS_MIN).max(FPS_MAX);
 const frameSchemaUrl = z.number().int().min(0);
+const detSchema = z.number().int().min(1).max(6);
 
 function num(v: string | null): number | null {
   if (v === null) return null;
@@ -72,6 +76,9 @@ export function parseUrlState(search: string): UrlState {
     st.frame = frame;
   }
 
+  const det = num(p.get("det"));
+  if (det !== null && detSchema.safeParse(det).success) st.det = det;
+
   const embed = p.get("embed");
   st.embed = embed === "1" || embed === "true";
 
@@ -88,6 +95,7 @@ export function serializeUrlState(st: UrlState): string {
   if (st.cmap !== DEFAULT_URL_STATE.cmap) p.set("cmap", st.cmap);
   if (st.fps !== DEFAULT_URL_STATE.fps) p.set("fps", st.fps.toString());
   if (st.frame !== 0) p.set("frame", st.frame.toString());
+  if (st.det !== null) p.set("det", st.det.toString());
   if (st.embed) p.set("embed", "1");
   const s = p.toString();
   return s === "" ? "" : `?${s}`;

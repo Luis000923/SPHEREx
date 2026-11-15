@@ -202,3 +202,25 @@
 .sp-plot .u-select {
   background: var(--band-fill);
 }
+
+/* Hover bubble for the nearest point (value, sigma, detector, flags);
+   positioned by the setCursor hook, never interactive. */
+.sp-tooltip {
+  position: absolute;
+  z-index: 5;
+  max-width: 18rem;
+  padding: var(--space-1) var(--space-2);
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: pre-line;
+  pointer-events: none;
+}
+.sp-tooltip[hidden] {
+  display: none;
+}

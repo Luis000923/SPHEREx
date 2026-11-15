@@ -14,6 +14,9 @@ import {
   flagCounts,
   layoutBandLabels,
   prepareSpectrum,
+  robustYRange,
+  type PreparedSpectrum,
+  type YRange,
 } from "./prepare";
 import {
   UPLOT_VERSION,
@@ -55,13 +58,25 @@ function plotSize(el: HTMLElement): { width: number; height: number } {
   };
 }
 
+// Tooltip + marker text: three significant digits, kept plain (no units
+// rounding) so a 103.8 outlier still reads "103.8".
+function fmtNum(v: number): string {
+  return Math.abs(v) >= 100 ? v.toFixed(1) : v.toPrecision(3);
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
 function buildChart(
   UPlot: UPlotConstructor,
   el: HTMLElement,
   spectrum: SpectrumResponse,
+  prepared: PreparedSpectrum,
+  yRange: YRange | null,
   showBands: boolean,
+  tipEl: HTMLElement | null,
 ): UPlotInstance {
-  const prepared = prepareSpectrum(spectrum.points);
   // Colors and fonts come from tokens.css; the fallbacks only apply when
   // the stylesheet is missing (tests).
   const fg = cssVar(el, "--fg-dim", "gray");
@@ -74,7 +89,11 @@ function buildChart(
   const xs = prepared.wavelengthUm;
   const ys = prepared.flux;
   const sigmas = prepared.sigma;
+  const pointFlags = prepared.flags;
+  const pointDets = prepared.detectors;
   const data: UPlotData = [xs, ys];
+  const yLo = yRange?.min ?? -Infinity;
+  const yHi = yRange?.max ?? Infinity;
 
   const drawBands = (u: UPlotInstance) => {
     if (!showBands) return;
@@ -116,7 +135,7 @@ function buildChart(
   };
 
   const drawErrBars = (u: UPlotInstance) => {
-    const { ctx } = u;
+    const { ctx, bbox } = u;
     ctx.save();
     ctx.strokeStyle = accent;
     ctx.lineWidth = 1;
@@ -130,8 +149,10 @@ function buildChart(
         continue;
       }
       const xp = u.valToPos(x, "x", true);
-      const yTop = u.valToPos(v + s, "y", true);
-      const yBot = u.valToPos(v - s, "y", true);
+      // Clamp to the plot area: with a robust y-range the bar of an
+      // off-scale point must not spill over the axis.
+      const yTop = clamp(u.valToPos(v + s, "y", true), bbox.top, bbox.top + bbox.height);
+      const yBot = clamp(u.valToPos(v - s, "y", true), bbox.top, bbox.top + bbox.height);
       ctx.moveTo(xp - 3, yTop);
       ctx.lineTo(xp + 3, yTop);
       ctx.moveTo(xp, yTop);
@@ -143,21 +164,116 @@ function buildChart(
     ctx.restore();
   };
 
+  // Markers are drawn by hand (uPlot's are uniform per series): a clean
+  // point is a small filled dot, a flagged one a hollow ring, and a point
+  // outside the robust y-range a triangle at the clipped edge pointing
+  // toward it.
+  const drawPoints = (u: UPlotInstance) => {
+    const { ctx, bbox } = u;
+    const top = bbox.top;
+    const bottom = bbox.top + bbox.height;
+    ctx.save();
+    ctx.strokeStyle = accent;
+    ctx.fillStyle = accent;
+    ctx.lineWidth = 1.4;
+    for (let i = 0; i < xs.length; i++) {
+      const v = ys[i];
+      const x = xs[i];
+      if (v === null || v === undefined || x === undefined) continue;
+      const xp = u.valToPos(x, "x", true);
+      if (xp < bbox.left - 8 || xp > bbox.left + bbox.width + 8) continue;
+      const flagged = (pointFlags[i]?.length ?? 0) > 0;
+      if (v > yHi || v < yLo) {
+        // Off-scale: triangle at the edge, apex toward the point.
+        const up = v > yHi;
+        const cy = up ? top + 7 : bottom - 7;
+        ctx.beginPath();
+        ctx.moveTo(xp, up ? cy - 5 : cy + 5);
+        ctx.lineTo(xp - 4.5, up ? cy + 3 : cy - 3);
+        ctx.lineTo(xp + 4.5, up ? cy + 3 : cy - 3);
+        ctx.closePath();
+        if (flagged) ctx.stroke();
+        else ctx.fill();
+        continue;
+      }
+      const yp = u.valToPos(v, "y", true);
+      ctx.beginPath();
+      ctx.arc(xp, yp, flagged ? 3.5 : 2.2, 0, Math.PI * 2);
+      if (flagged) ctx.stroke();
+      else ctx.fill();
+    }
+    ctx.restore();
+  };
+
+  // Hover tooltip: nearest point's value, sigma, detector and flag names.
+  const updateTip = (u: UPlotInstance) => {
+    if (tipEl === null) return;
+    const c = u.cursor;
+    const idx = c?.idx;
+    if (idx === undefined || idx === null || c?.left === undefined || c.top === undefined) {
+      tipEl.hidden = true;
+      return;
+    }
+    const v = ys[idx];
+    const s = sigmas[idx];
+    const wl = xs[idx];
+    const det = pointDets[idx];
+    const flags = pointFlags[idx] ?? [];
+    const lines: string[] = [];
+    const parts: string[] = [];
+    if (wl !== undefined) parts.push(`${fmtNum(wl)} µm`);
+    parts.push(v === null || v === undefined ? "no data" : `${fmtNum(v)} ${spectrum.unit}`);
+    if (v !== null && v !== undefined && s !== null && s !== undefined) {
+      parts.push(`± ${fmtNum(s)}`);
+    }
+    if (det !== undefined) parts.push(`D${det}`);
+    lines.push(parts.join("  ·  "));
+    if (flags.length > 0) lines.push(`flags: ${flags.join(", ")}`);
+    if (v !== null && v !== undefined && (v > yHi || v < yLo)) {
+      lines.push("off scale");
+    }
+    tipEl.textContent = lines.join("\n");
+    tipEl.hidden = false;
+    // Cursor coords are plot-area pixels; offset by the bbox into the
+    // container, then clamp the bubble inside it.
+    const px = u.bbox.left + c.left;
+    const py = u.bbox.top + c.top;
+    const tw = tipEl.offsetWidth;
+    const th = tipEl.offsetHeight;
+    const cw = el.clientWidth;
+    const ch = el.clientHeight;
+    let left = px + 12;
+    let top = py + 12;
+    if (left + tw > cw - 4) left = px - 12 - tw;
+    if (left < 4) left = 4;
+    if (top + th > ch - 4) top = py - 12 - th;
+    if (top < 4) top = 4;
+    tipEl.style.left = `${left}px`;
+    tipEl.style.top = `${top}px`;
+  };
+
   const font = `12px ${family}`;
   const size = plotSize(el);
   const opts: UPlotOptions = {
     width: size.width,
     height: size.height,
-    scales: { x: { time: false } },
+    scales: {
+      x: { time: false },
+      ...(yRange !== null ? { y: { range: [yRange.min, yRange.max] } } : {}),
+    },
     axes: [
       { stroke: fg, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid }, label: "Wavelength (µm)", labelSize: 20, size: 32, font, labelFont: font },
       { stroke: fg, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid }, label: spectrum.unit, labelSize: 20, size: 44, font, labelFont: font },
     ],
     series: [
       {},
-      { label: spectrum.unit, stroke: accent, width: 1.5, points: { show: true, size: 4, fill: accent } },
+      { label: spectrum.unit, stroke: accent, width: 1.5, points: { show: false } },
     ],
-    hooks: { drawClear: [drawBands], draw: [drawErrBars] },
+    hooks: {
+      drawClear: [drawBands],
+      draw: [drawErrBars, drawPoints],
+      setCursor: [updateTip],
+    },
     legend: { show: false },
     cursor: { show: true, points: { size: 8 } },
     padding: [12, 12, 0, 0],
@@ -169,6 +285,7 @@ export function SpectrumPanel(props: SpectrumPanelProps) {
   const { open, status, spectrum, error, raDeg, decDeg } = props;
   const [showBands, setShowBands] = useState(true);
   const plotRef = useRef<HTMLDivElement | null>(null);
+  const tipRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLElement | null>(null);
   const chartRef = useRef<UPlotInstance | null>(null);
   const [plotError, setPlotError] = useState<string | null>(null);
@@ -178,6 +295,11 @@ export function SpectrumPanel(props: SpectrumPanelProps) {
 
   const prepared = useMemo(
     () => (spectrum === null ? null : prepareSpectrum(spectrum.points)),
+    [spectrum],
+  );
+  // Robust flux-axis range (f11): flagged outliers must not squash it.
+  const yRange = useMemo(
+    () => (spectrum === null ? null : robustYRange(spectrum.points)),
     [spectrum],
   );
   const dets = useMemo(
@@ -200,7 +322,15 @@ export function SpectrumPanel(props: SpectrumPanelProps) {
       .then((UPlot) => {
         if (disposed || plotRef.current === null) return;
         chartRef.current?.destroy();
-        const u = buildChart(UPlot, plotRef.current, spectrum, showBands);
+        const u = buildChart(
+          UPlot,
+          plotRef.current,
+          spectrum,
+          prepared,
+          yRange,
+          showBands,
+          tipRef.current,
+        );
         chartRef.current = u;
         setPlotError(null);
         ro = new ResizeObserver(() => {
@@ -219,8 +349,10 @@ export function SpectrumPanel(props: SpectrumPanelProps) {
       ro?.disconnect();
       chartRef.current?.destroy();
       chartRef.current = null;
+      const tip = tipRef.current;
+      if (tip !== null) tip.hidden = true; // no stale tooltip across rebuilds
     };
-  }, [open, spectrum, prepared, showBands, lightScheme]);
+  }, [open, spectrum, prepared, yRange, showBands, lightScheme]);
 
   // On small screens the docked panel sits under the viewer; bring it into
   // view when it opens (no-op when it is already visible).
@@ -271,7 +403,10 @@ export function SpectrumPanel(props: SpectrumPanelProps) {
             />
             <span>Bands</span>
           </label>
-          <label className="sp-aperture">
+          <label
+            className="sp-aperture"
+            title="Aperture radius in pixels — a larger aperture follows moving stars better"
+          >
             <span>Aperture</span>
             <select
               aria-label="Aperture radius in pixels"
@@ -316,7 +451,9 @@ export function SpectrumPanel(props: SpectrumPanelProps) {
             className="sp-plot"
             role="img"
             aria-label={`Spectrum chart, ${prepared.validCount} points`}
-          />
+          >
+            <div ref={tipRef} className="sp-tooltip" hidden />
+          </div>
         ) : (
           <div className="sp-placeholder">
             {status === "loading" ? (

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computeInterval,
+  frameInterval,
   minMaxInterval,
   normalizeValue,
   percentileInterval,
@@ -118,5 +119,37 @@ describe("computeInterval", () => {
       const iv = computeInterval(data, k);
       expect(iv.hi).toBeGreaterThan(iv.lo);
     }
+  });
+});
+
+// f10 regression: Diff frames are signed (new minus reference). With the
+// default grayscale colormap they used the 1-99 percentile interval, so
+// "no change" (0) landed at 0.80 of the range on Barnard's Star and was
+// clipped to white on R Draconis (large one-sided residual of a saturated
+// Mira). Signed frames now get a symmetric interval centred on zero.
+describe("frameInterval", () => {
+  // Skewed residuals: mostly ~0, a big negative lobe (like R Draconis).
+  const skewed = new Float32Array(1000);
+  for (let i = 0; i < 1000; i++) skewed[i] = i < 100 ? -2000 + i : (i % 7) * 0.01 - 0.03;
+
+  it("is symmetric around zero for signed frames with any colormap", () => {
+    const iv = frameInterval(skewed, "linear", { diverging: false, signed: true });
+    expect(iv.lo).toBeCloseTo(-iv.hi, 9);
+    expect(iv.hi).toBeGreaterThan(0);
+  });
+
+  it("is symmetric for diverging colormaps even on unsigned frames", () => {
+    const iv = frameInterval(skewed, "linear", { diverging: true, signed: false });
+    expect(iv.lo).toBeCloseTo(-iv.hi, 9);
+  });
+
+  it("keeps the percentile interval for unsigned frames", () => {
+    const iv = frameInterval(skewed, "linear", { diverging: false, signed: false });
+    expect(iv).toEqual(computeInterval(skewed, "linear"));
+  });
+
+  it("honours an explicit zscale choice on signed frames", () => {
+    const iv = frameInterval(skewed, "zscale", { diverging: false, signed: true });
+    expect(iv).toEqual(computeInterval(skewed, "zscale"));
   });
 });

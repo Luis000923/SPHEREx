@@ -188,6 +188,25 @@
   color: var(--fg-dim);
 }
 
+/* Inline retry inside a status line (partial results): quiet, text-sized. */
+.app-status-retry {
+  min-height: var(--target);
+  min-width: var(--target);
+  margin: calc(-1 * var(--space-2)) 0;
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.app-status-retry:hover {
+  color: var(--fg);
+}
+
 /* ---------- controls panel (mobile bottom sheet) ---------- */
 
 .app-panel {

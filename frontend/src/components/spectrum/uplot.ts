@@ -11,6 +11,7 @@ export type UPlotHook = (u: UPlotInstance) => void;
 export interface UPlotHooks {
   drawClear?: UPlotHook[];
   draw?: UPlotHook[];
+  setCursor?: UPlotHook[];
 }
 
 export interface UPlotInstance {
@@ -21,6 +22,8 @@ export interface UPlotInstance {
   bbox: { left: number; top: number; width: number; height: number };
   ctx: CanvasRenderingContext2D;
   scales: Record<string, { min?: number; max?: number }>;
+  /** Cursor position in plot-area pixels + nearest data index. */
+  cursor?: { left?: number; top?: number; idx?: number | null };
 }
 
 export interface UPlotOptions {

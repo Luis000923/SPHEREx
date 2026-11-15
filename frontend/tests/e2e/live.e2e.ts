@@ -17,16 +17,18 @@ test.describe("@live backend integration", { tag: "@live" }, () => {
   test.skip(!LIVE, "opt-in live tests: set E2E_LIVE=1");
   test.setTimeout(300_000);
 
+  // Epoch-2026.0 preset positions (b11-presets-epoch); the J2000 catalogue
+  // positions of the fast movers sit outside their own field today.
   const TARGETS = [
-    { name: "WISE 0855", ra: "133.795158", dec: "-7.245147" },
-    { name: "Barnard's Star", ra: "269.452", dec: "4.69333" },
+    { name: "WISE 0855", ra: "133.7597667", dec: "-7.2421833", fov: "0.1" },
+    { name: "Barnard's Star", ra: "269.4462583", dec: "4.768325", fov: "0.1" },
   ] as const;
 
   for (const t of TARGETS) {
     test(`${t.name}: backend returns at least 2 frames and no error state`, async ({
       page,
     }) => {
-      await page.goto(`/?ra=${t.ra}&dec=${t.dec}&fov=0.05`);
+      await page.goto(`/?ra=${t.ra}&dec=${t.dec}&fov=${t.fov}`);
 
       const canvas = frameCanvas(page);
       await expect(canvas).toHaveAttribute(

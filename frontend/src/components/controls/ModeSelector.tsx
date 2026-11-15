@@ -1,14 +1,12 @@
 // Display-mode segmented control (raw / difference / co-add / detector
 // stack) plus a detector filter (all arrays or a single D1-D6 group).
-import { API_MODES, DETECTOR_IDS, type ApiMode } from "../../lib/types";
+import {
+  API_MODES,
+  DETECTOR_IDS,
+  MODE_LABELS,
+  type ApiMode,
+} from "../../lib/types";
 import "./controls.css";
-
-const MODE_LABELS: Record<ApiMode, string> = {
-  raw: "Raw",
-  diff: "Diff",
-  coadd: "Co-add",
-  stack: "Stack",
-};
 
 const MODE_HINTS: Record<ApiMode, string> = {
   raw: "Observed frames as delivered",

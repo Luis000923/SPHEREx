@@ -26,6 +26,10 @@ export interface PreparedSpectrum {
   wavelengthUm: number[];
   flux: Array<number | null>;
   sigma: Array<number | null>;
+  /** Flag names per sorted point (empty when clean), verbatim from the API. */
+  flags: Array<readonly string[]>;
+  /** Detector per sorted point, for the hover tooltip. */
+  detectors: number[];
   validCount: number;
 }
 
@@ -34,15 +38,58 @@ export function prepareSpectrum(points: readonly SpectrumPoint[]): PreparedSpect
   const wavelengthUm: number[] = [];
   const flux: Array<number | null> = [];
   const sigma: Array<number | null> = [];
+  const flags: Array<readonly string[]> = [];
+  const detectors: number[] = [];
   let validCount = 0;
   for (const p of sorted) {
     wavelengthUm.push(p.wavelength_um);
     const v = Number.isFinite(p.value) ? p.value : null;
     flux.push(v);
     sigma.push(Number.isFinite(p.sigma) && p.sigma > 0 ? p.sigma : null);
+    flags.push(p.flags ?? []);
+    detectors.push(p.detector);
     if (v !== null) validCount += 1;
   }
-  return { wavelengthUm, flux, sigma, validCount };
+  return { wavelengthUm, flux, sigma, flags, detectors, validCount };
+}
+
+export interface YRange {
+  min: number;
+  max: number;
+}
+
+// Percentile by linear interpolation on the (n-1)-scaled index — the same
+// convention numpy uses — so small samples stay inside [min, max].
+function percentile(sortedAsc: readonly number[], p: number): number {
+  const idx = (p / 100) * (sortedAsc.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  const a = sortedAsc[lo]!;
+  return a + (sortedAsc[hi]! - a) * (idx - lo);
+}
+
+/**
+ * Display range for the flux axis: the 2nd–98th percentile of the finite
+ * unflagged values, padded by 10% of its span. A single flagged outlier
+ * (e.g. a 103.8 MJy/sr TRANSIENT point against ~0.3 elsewhere, seen in the
+ * real data) must not squash the whole chart; when every finite point is
+ * flagged the full set is used instead. Degenerate inputs (one point, all
+ * values equal) still get a nonzero span. Returns null when no finite
+ * value exists — the caller keeps the chart's automatic range.
+ */
+export function robustYRange(
+  points: readonly SpectrumPoint[],
+): YRange | null {
+  const finite = points.filter((p) => Number.isFinite(p.value));
+  const clean = finite.filter((p) => (p.flags?.length ?? 0) === 0);
+  const pool = clean.length > 0 ? clean : finite;
+  if (pool.length === 0) return null;
+  const sorted = pool.map((p) => p.value).sort((a, b) => a - b);
+  const lo = percentile(sorted, 2);
+  const hi = percentile(sorted, 98);
+  const span = hi - lo;
+  const pad = span > 0 ? span * 0.1 : Math.max(Math.abs(hi), 1) * 0.1;
+  return { min: lo - pad, max: hi + pad };
 }
 
 // Sorted, de-duplicated detector ids present in the payload.

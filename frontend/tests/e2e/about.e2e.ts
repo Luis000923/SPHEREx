@@ -181,4 +181,7 @@ test("embed mode keeps the IRSA attribution linking to the full app", async ({
   expect(href).toContain("mock=1");
   expect(href).toContain("ra=133.795");
   expect(href).not.toContain("embed=1");
+  // f10: the credit was a 15 px tall link, below the 44 px target rule.
+  const box = await credit.boundingBox();
+  expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
 });

@@ -47,6 +47,30 @@ test("mode, stretch, colormap and fps persist in the URL across reload", async (
   await expect(page.getByText("12 fps")).toBeVisible();
 });
 
+test("the detector filter persists in the URL as det", async ({ page }) => {
+  await page.goto(mockUrl("ra=133.795&dec=-7.245&fov=0.05"));
+  await expect(frameCanvas(page)).toBeVisible();
+  await openControlsPanel(page);
+
+  await page
+    .getByRole("radiogroup", { name: "Detector filter" })
+    .getByRole("radio", { name: "D3" })
+    .click();
+  await expect(page).toHaveURL(/det=3/);
+
+  const u = new URL(page.url());
+  u.searchParams.set("mock", "1");
+  await page.goto(`${u.pathname}${u.search}`);
+
+  await expect(frameCanvas(page)).toBeVisible();
+  await openControlsPanel(page);
+  await expect(
+    page
+      .getByRole("radiogroup", { name: "Detector filter" })
+      .getByRole("radio", { name: "D3" }),
+  ).toBeChecked();
+});
+
 test("invalid URL values fall back to defaults without crashing", async ({
   page,
 }) => {

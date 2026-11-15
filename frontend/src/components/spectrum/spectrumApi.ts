@@ -1,6 +1,6 @@
 // API client for /api/v1/spectrum. The base URL is injected by the caller;
 // callers may also inject any object satisfying SpectrumClient (tests, mocks).
-import { ApiError } from "../../lib/api";
+import { ApiError, apiFetch } from "../../lib/api";
 import {
   spectrumResponseSchema,
   type AperturePx,
@@ -48,9 +48,9 @@ export function createSpectrumClient(apiBase: string): SpectrumClient {
   const base = apiBase.replace(/\/$/, "");
   return {
     async spectrum(raDeg, decDeg, aperturePx, signal) {
-      const res = await fetch(
+      const res = await apiFetch(
         `${base}/api/v1/spectrum?${spectrumQuery(raDeg, decDeg, aperturePx)}`,
-        { signal: signal ?? null },
+        signal,
       );
       if (!res.ok) throw await parseError(res);
       return spectrumResponseSchema.parse(await res.json());

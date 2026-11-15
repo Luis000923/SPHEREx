@@ -208,6 +208,20 @@ export function AboutDialog() {
             from the same detector.
           </p>
 
+          <h3 className="about-h">Targets</h3>
+          <p>
+            Preset positions are propagated to epoch 2026.0 — the SPHEREx
+            survey epoch — so fast-moving targets stay centred:
+            Barnard&apos;s Star drifts about 10 arcsec per year to the
+            north, and WISE 0855&apos;s challenge catalogue position
+            (08h55m10.831s, &minus;07d14m42.53s) is its AllWISE
+            epoch-2010.5 position. WISE 0855 is a very faint, extremely
+            cold brown dwarf — look for it in the long-wavelength
+            detectors (D5, D6) with Co-add or the ZScale stretch; its
+            motion (about 8 arcsec per year, about 1.3 native pixels) is
+            near the limit of what SPHEREx pixels can show.
+          </p>
+
           <h3 className="about-h">Flags</h3>
           <p>
             Flag chips mark data-quality bits of the shown frame. Each

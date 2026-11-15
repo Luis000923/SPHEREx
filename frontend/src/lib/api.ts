@@ -44,6 +44,25 @@ export class ApiError extends Error {
   }
 }
 
+export const NETWORK_ERROR_MESSAGE =
+  "Cannot reach the SPHEREx Blink server. Check your connection and retry.";
+
+// fetch() rejects with a bare TypeError ("Failed to fetch") when the server
+// is unreachable; turn it into a calm, specific ApiError. Aborts pass through.
+export async function apiFetch(
+  url: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  try {
+    return await fetch(url, { signal: signal ?? null });
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new ApiError(0, "network", NETWORK_ERROR_MESSAGE);
+    }
+    throw err;
+  }
+}
+
 async function parseError(res: Response): Promise<ApiError> {
   try {
     const body = errorBodySchema.safeParse(await res.json());
@@ -62,9 +81,10 @@ export async function fetchFrames(
   signal?: AbortSignal,
 ): Promise<FramesResponse> {
   const base = apiBase.replace(/\/$/, "");
-  const res = await fetch(`${base}/api/v1/frames?${framesQuery(params)}`, {
-    signal: signal ?? null,
-  });
+  const res = await apiFetch(
+    `${base}/api/v1/frames?${framesQuery(params)}`,
+    signal,
+  );
   if (!res.ok) throw await parseError(res);
   return framesResponseSchema.parse(await res.json());
 }
@@ -74,7 +94,7 @@ export async function fetchTargets(
   signal?: AbortSignal,
 ): Promise<Target[]> {
   const base = apiBase.replace(/\/$/, "");
-  const res = await fetch(`${base}/api/v1/targets`, { signal: signal ?? null });
+  const res = await apiFetch(`${base}/api/v1/targets`, signal);
   if (!res.ok) throw await parseError(res);
   return z.array(targetSchema).parse(await res.json());
 }

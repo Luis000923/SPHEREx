@@ -4,8 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DecodedFrame } from "../../lib/types";
 import {
-  computeInterval,
-  symmetricInterval,
+  frameInterval,
   type Interval,
   type StretchKind,
 } from "../../lib/stretch";
@@ -16,6 +15,7 @@ import {
 import { createFrameRenderer, type FrameRenderer } from "../../lib/gl";
 import { mjdToIso } from "../../lib/coords";
 import { FPS_MAX, FPS_MIN } from "../../lib/urlState";
+import { advancePlayClock } from "../../lib/playClock";
 import "./viewer.css";
 
 export interface TransportState {
@@ -36,6 +36,8 @@ export interface TimeLapseCanvasProps {
   transport: TransportState;
   onTransport: (patch: Partial<TransportState>) => void;
   embed?: boolean;
+  /** Frames hold signed values (Diff mode): zero is drawn mid-range. */
+  signed?: boolean;
 }
 
 // 16px stroke icon for the transport buttons (inline SVG, no icon font).
@@ -55,7 +57,7 @@ function Icon(props: { d: string; fill?: boolean }) {
 }
 
 export function TimeLapseCanvas(props: TimeLapseCanvasProps) {
-  const { frames, transport, onTransport, embed = false } = props;
+  const { frames, transport, onTransport, embed = false, signed = false } = props;
   const n = frames.length;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<FrameRenderer | null>(null);
@@ -96,16 +98,17 @@ export function TimeLapseCanvas(props: TimeLapseCanvasProps) {
 
   const intervalFor = useCallback(
     (f: DecodedFrame): Interval => {
-      const key = `${f.meta.id}:${props.stretch}:${props.cmap}`;
+      const key = `${f.meta.id}:${props.stretch}:${props.cmap}:${signed}`;
       const hit = intervalCache.current.get(key);
       if (hit !== undefined) return hit;
-      const iv = isDivergingCmap(props.cmap)
-        ? symmetricInterval(f.pixels)
-        : computeInterval(f.pixels, props.stretch);
+      const iv = frameInterval(f.pixels, props.stretch, {
+        diverging: isDivergingCmap(props.cmap),
+        signed,
+      });
       intervalCache.current.set(key, iv);
       return iv;
     },
-    [props.stretch, props.cmap],
+    [props.stretch, props.cmap, signed],
   );
 
   useEffect(() => {
@@ -119,36 +122,42 @@ export function TimeLapseCanvas(props: TimeLapseCanvasProps) {
     r.draw({ lo: iv.lo, hi: iv.hi, stretch: props.stretch, cmap: props.cmap });
   }, [current, intervalFor, props.stretch, props.cmap, props.width, props.height]);
 
-  // requestAnimationFrame playback clock
+  // requestAnimationFrame playback clock. The loop reads the current frame,
+  // loop flag and callback through refs so it is not torn down and restarted
+  // on every step (that reset the clock and slowed 30 fps to ~20 fps).
   const blinkRef = useRef(transport.blink);
   blinkRef.current = transport.blink;
+  const playRef = useRef({ frameIndex, n, loop: transport.loop, onTransport });
+  playRef.current = { frameIndex, n, loop: transport.loop, onTransport };
+  const hasFrames = n > 0;
   useEffect(() => {
-    if (!transport.playing || n === 0) return;
+    if (!transport.playing || !hasFrames) return;
     let raf = 0;
     let last = performance.now();
     let acc = 0;
     const tick = (now: number) => {
-      acc += now - last;
+      const clock = advancePlayClock(acc, now - last, transport.fps);
+      acc = clock.acc;
       last = now;
-      if (acc >= 1000 / transport.fps) {
-        acc = 0;
+      if (clock.steps > 0) {
+        const cur = playRef.current;
         if (blinkRef.current) {
           setBlinkPhase((p) => (p === 0 ? 1 : 0));
-        } else if (frameIndex >= n - 1) {
-          if (transport.loop) {
-            onTransport({ frameIndex: 0 });
+        } else if (cur.frameIndex >= cur.n - 1) {
+          if (cur.loop) {
+            cur.onTransport({ frameIndex: 0 });
           } else {
-            onTransport({ playing: false });
+            cur.onTransport({ playing: false });
           }
         } else {
-          onTransport({ frameIndex: frameIndex + 1 });
+          cur.onTransport({ frameIndex: cur.frameIndex + 1 });
         }
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [transport.playing, transport.fps, transport.loop, frameIndex, n, onTransport]);
+  }, [transport.playing, transport.fps, hasFrames]);
 
   useEffect(() => {
     if (!transport.playing) setBlinkPhase(0);

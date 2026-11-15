@@ -9,6 +9,16 @@ import type { AperturePx, SpectrumResponse } from "./types";
 
 export type SpectrumStatus = "idle" | "loading" | "success" | "error";
 
+/**
+ * The backend answers /spectrum inside its soft deadline with whatever
+ * cutouts have decoded and keeps completing in the background. A response
+ * with only 1-2 points that came back fast is almost certainly partial, so
+ * the same request is issued once more a few seconds later.
+ */
+export const SPECTRUM_RETRY_MS = 5000;
+export const SPECTRUM_PARTIAL_FAST_MS = 15_000;
+export const SPECTRUM_PARTIAL_MAX_POINTS = 2;
+
 export interface SpectrumState {
   status: SpectrumStatus;
   open: boolean;
@@ -33,16 +43,21 @@ export function useSpectrum(client: SpectrumClient | null): SpectrumController {
     error: null,
     raDeg: null,
     decDeg: null,
-    aperturePx: 3,
+    // 5 px default: measured on Barnard's Star (f10 real data), a 3 px
+    // aperture misses the star between epochs (values jumped 165-1085
+    // MJy/sr band to band); 5 px follows the proper motion smoothly.
+    aperturePx: 5,
   });
   const seq = useRef(0);
   const abort = useRef<AbortController | null>(null);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
 
   useEffect(
     () => () => {
       abort.current?.abort();
+      if (retryTimer.current !== null) clearTimeout(retryTimer.current);
     },
     [],
   );
@@ -52,6 +67,10 @@ export function useSpectrum(client: SpectrumClient | null): SpectrumController {
       const ap = aperturePx ?? stateRef.current.aperturePx;
       const id = ++seq.current;
       abort.current?.abort();
+      if (retryTimer.current !== null) {
+        clearTimeout(retryTimer.current);
+        retryTimer.current = null;
+      }
       if (client === null) {
         setState((s) => ({
           ...s,
@@ -76,21 +95,41 @@ export function useSpectrum(client: SpectrumClient | null): SpectrumController {
       }));
       const ctrl = new AbortController();
       abort.current = ctrl;
-      client
-        .spectrum(raDeg, decDeg, ap, ctrl.signal)
-        .then((data) => {
-          if (seq.current !== id) return;
-          setState((s) => ({ ...s, status: "success", data, error: null }));
-        })
-        .catch((err: unknown) => {
-          if (seq.current !== id || ctrl.signal.aborted) return;
-          setState((s) => ({
-            ...s,
-            status: "error",
-            data: null,
-            error: err instanceof Error ? err.message : "Spectrum request failed",
-          }));
-        });
+      const t0 = Date.now();
+      // `quiet` retries replace the data in place: the partial spectrum
+      // already on screen never flips back to a loading state.
+      const issue = (quiet: boolean) => {
+        client
+          .spectrum(raDeg, decDeg, ap, ctrl.signal)
+          .then((data) => {
+            if (seq.current !== id) return;
+            setState((s) => ({ ...s, status: "success", data, error: null }));
+            const fast = Date.now() - t0 < SPECTRUM_PARTIAL_FAST_MS;
+            if (
+              !quiet &&
+              fast &&
+              data.points.length >= 1 &&
+              data.points.length <= SPECTRUM_PARTIAL_MAX_POINTS
+            ) {
+              retryTimer.current = setTimeout(() => {
+                retryTimer.current = null;
+                if (seq.current === id && !ctrl.signal.aborted) issue(true);
+              }, SPECTRUM_RETRY_MS);
+            }
+          })
+          .catch((err: unknown) => {
+            if (seq.current !== id || ctrl.signal.aborted) return;
+            if (quiet) return; // keep the partial spectrum on screen
+            setState((s) => ({
+              ...s,
+              status: "error",
+              data: null,
+              error:
+                err instanceof Error ? err.message : "Spectrum request failed",
+            }));
+          });
+      };
+      issue(false);
     },
     [client],
   );
@@ -110,6 +149,10 @@ export function useSpectrum(client: SpectrumClient | null): SpectrumController {
   const close = useCallback(() => {
     seq.current += 1; // drop in-flight results
     abort.current?.abort();
+    if (retryTimer.current !== null) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
     setState((s) => ({ ...s, open: false }));
   }, []);
 

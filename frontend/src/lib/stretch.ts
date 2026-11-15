@@ -180,3 +180,18 @@ export function normalizeValue(
   if (!(range > 0)) return 0;
   return stretchUnit((v - lo) / range, kind);
 }
+
+// Display interval for one frame. Signed frames (Diff: new minus reference)
+// and diverging colormaps get a symmetric interval so zero ("no change")
+// sits mid-range on every frame; an explicit ZScale choice on signed data is
+// honoured. Everything else uses the stretch's own interval.
+export function frameInterval(
+  data: Float32Array | readonly number[],
+  kind: StretchKind,
+  opts: { diverging: boolean; signed: boolean },
+): Interval {
+  if (opts.diverging || (opts.signed && kind !== "zscale")) {
+    return symmetricInterval(data);
+  }
+  return computeInterval(data, kind);
+}

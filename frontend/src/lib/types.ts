@@ -5,6 +5,13 @@ export const apiModeSchema = z.enum(["raw", "diff", "coadd", "stack"]);
 export type ApiMode = z.infer<typeof apiModeSchema>;
 export const API_MODES: readonly ApiMode[] = ["raw", "diff", "coadd", "stack"];
 
+export const MODE_LABELS: Record<ApiMode, string> = {
+  raw: "Raw",
+  diff: "Diff",
+  coadd: "Co-add",
+  stack: "Stack",
+};
+
 export const wcsSchema = z.object({
   crpix: z.tuple([z.number(), z.number()]),
   crval: z.tuple([z.number(), z.number()]),

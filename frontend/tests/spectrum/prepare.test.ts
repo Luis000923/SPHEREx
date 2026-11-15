@@ -6,6 +6,7 @@ import {
   flagCounts,
   layoutBandLabels,
   prepareSpectrum,
+  robustYRange,
   type BandRect,
 } from "../../src/components/spectrum/prepare";
 import { makeMockSpectrum } from "../../src/components/spectrum/mockSpectrum";
@@ -72,6 +73,100 @@ describe("prepareSpectrum", () => {
     for (let i = 1; i < p.wavelengthUm.length; i++) {
       expect(p.wavelengthUm[i]!).toBeGreaterThanOrEqual(p.wavelengthUm[i - 1]!);
     }
+  });
+});
+
+describe("robustYRange", () => {
+  // f11: a single flagged outlier (TRANSIENT/SUR_ERROR/PERSIST, 103.8 vs
+  // ~0.3 MJy/sr on real data) squashed the whole chart. The axis range is
+  // now the 2nd-98th percentile of the unflagged points plus 10% margin.
+
+  it("is null for an empty or all-NaN payload", () => {
+    expect(robustYRange([])).toBeNull();
+    expect(robustYRange([pt({ value: NaN }), pt({ value: NaN })])).toBeNull();
+  });
+
+  it("excludes a flagged outlier so the bulk of the data fills the axis", () => {
+    const points = [
+      ...Array.from({ length: 22 }, (_, i) =>
+        pt({ wavelength_um: 1 + i * 0.1, value: 0.3 + i * 0.01 }),
+      ),
+      pt({ wavelength_um: 4.93, value: 103.8, flags: ["TRANSIENT", "SUR_ERROR", "PERSIST"] }),
+    ];
+    const r = robustYRange(points);
+    expect(r).not.toBeNull();
+    expect(r!.max).toBeLessThan(1);
+    expect(r!.min).toBeLessThan(0.4);
+  });
+
+  it("clips even an unflagged extreme value through the percentile", () => {
+    const points = [
+      ...Array.from({ length: 22 }, (_, i) =>
+        pt({ wavelength_um: 1 + i * 0.1, value: 0.3 + i * 0.01 }),
+      ),
+      pt({ wavelength_um: 4.9, value: 100 }),
+    ];
+    const r = robustYRange(points);
+    expect(r).not.toBeNull();
+    // p98 interpolates between the bulk and the outlier but the 10%
+    // margin cannot reach 100, so the top point is off-scale.
+    expect(r!.max).toBeLessThan(100);
+    expect(r!.max).toBeGreaterThan(0.5);
+    expect(r!.min).toBeLessThan(0.4);
+  });
+
+  it("ignores NaN values while choosing the percentile pool", () => {
+    const points = [
+      pt({ value: NaN }),
+      pt({ value: 1 }),
+      pt({ value: 2 }),
+      pt({ value: NaN }),
+      pt({ value: 3 }),
+    ];
+    const r = robustYRange(points);
+    expect(r).not.toBeNull();
+    expect(r!.min).toBeLessThanOrEqual(1);
+    expect(r!.max).toBeGreaterThanOrEqual(3);
+  });
+
+  it("centres the range on a single point instead of collapsing", () => {
+    const r = robustYRange([pt({ value: 5 })]);
+    expect(r).not.toBeNull();
+    expect(r!.min).toBeLessThan(5);
+    expect(r!.max).toBeGreaterThan(5);
+  });
+
+  it("widens the range when every value is equal", () => {
+    const r = robustYRange([pt({ value: 2 }), pt({ value: 2 }), pt({ value: 2 })]);
+    expect(r).not.toBeNull();
+    expect(r!.min).toBeLessThan(2);
+    expect(r!.max).toBeGreaterThan(2);
+  });
+
+  it("keeps a nonzero span around a zero constant series", () => {
+    const r = robustYRange([pt({ value: 0 }), pt({ value: 0 })]);
+    expect(r).not.toBeNull();
+    expect(r!.max).toBeGreaterThan(r!.min);
+  });
+
+  it("falls back to all points when every finite point is flagged", () => {
+    const points = [
+      pt({ value: 1, flags: ["TRANSIENT"] }),
+      pt({ value: 50, flags: ["SUR_ERROR"] }),
+      pt({ value: 100, flags: ["PERSIST"] }),
+    ];
+    const r = robustYRange(points);
+    expect(r).not.toBeNull();
+    expect(r!.min).toBeLessThanOrEqual(1);
+    expect(r!.max).toBeGreaterThanOrEqual(100);
+  });
+
+  it("leaves the headroom margin proportional to the data span", () => {
+    const points = Array.from({ length: 10 }, (_, i) => pt({ value: i }));
+    const r = robustYRange(points)!;
+    const mid = (r.min + r.max) / 2;
+    expect(mid).toBeCloseTo(4.5, 5);
+    expect(r.max - r.min).toBeGreaterThan(9);
   });
 });
 

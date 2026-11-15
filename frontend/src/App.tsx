@@ -43,19 +43,18 @@ import {
 import { makeMockSpectrum } from "./components/spectrum/mockSpectrum";
 import { FrameMetadata } from "./components/metadata/FrameMetadata";
 import { useUrlState } from "./hooks/useUrlState";
-import { useFrames, type FramesResult } from "./hooks/useFrames";
-import { fetchTargets } from "./lib/api";
 import {
-  formatDecDeg,
-  formatRaDeg,
-  parseDecToDeg,
-  parseRaToDeg,
-} from "./lib/coords";
+  MOCK_PARTIAL_MS,
+  useFrames,
+  type FramesResult,
+} from "./hooks/useFrames";
+import { fetchTargets } from "./lib/api";
+import { parseDecToDeg, parseRaToDeg } from "./lib/coords";
 import { makeMockFramesResponse } from "./lib/mock";
-import { PRESET_TARGETS } from "./lib/presets";
+import { PRESET_TARGETS, menuTargetsFromServer } from "./lib/presets";
 import { isStretchKind, STRETCH_KINDS } from "./lib/stretch";
 import { COLORMAP_NAMES, isColormapName } from "./lib/colormaps";
-import type { FramesResponse } from "./lib/types";
+import { MODE_LABELS, type FramesResponse } from "./lib/types";
 import type { UrlState } from "./lib/urlState";
 
 const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE ?? "") as string;
@@ -73,6 +72,15 @@ const AladinOverlay = lazy(() =>
 function mockModeEnabled(): boolean {
   if (typeof window === "undefined") return false;
   return new URLSearchParams(window.location.search).get("mock") === "1";
+}
+
+// ?mock_delay=<ms> stretches the mock "still downloading" phase so the
+// pending/partial states can be exercised (e2e). Defaults to a beat.
+function mockDelayMs(): number {
+  if (typeof window === "undefined") return MOCK_PARTIAL_MS;
+  const v = new URLSearchParams(window.location.search).get("mock_delay");
+  const n = v === null ? NaN : Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : MOCK_PARTIAL_MS;
 }
 
 // Aperture is a spectrum-request parameter; the mock ignores it because the
@@ -117,6 +125,7 @@ interface ExplorerProps {
   detector: number | null;
   embed: boolean;
   mockData?: FramesResponse;
+  mockDelay: number;
   onPick: (raDeg: number, decDeg: number) => void;
   onResult: (r: FramesResult) => void;
   onRetry: () => void;
@@ -125,7 +134,7 @@ interface ExplorerProps {
 // Owns frame fetching and transport state for the main viewer area. App
 // remounts it (key change) on Retry, which re-runs the fetch effect.
 function Explorer(props: ExplorerProps) {
-  const { url, setUrl, detector, embed, apiBase, mockData } = props;
+  const { url, setUrl, detector, embed, apiBase, mockData, mockDelay } = props;
   const [local, setLocal] = useState({
     playing: false,
     loop: true,
@@ -139,9 +148,11 @@ function Explorer(props: ExplorerProps) {
       fov: url.fov,
       mode: url.mode,
       detector,
-      maxFrames: 60,
+      // max_frames omitted: the contract default (24) is the selection
+      // the server pre-warms; 60 fetched 2.5x more cutouts and missed it.
     },
     mockData,
+    mockDelay,
   );
 
   const { onResult } = props;
@@ -174,9 +185,21 @@ function Explorer(props: ExplorerProps) {
   };
 
   if (res.status === "error") {
+    if (res.errorCode === "not_found") {
+      return (
+        <EmptyState
+          title="No SPHEREx observations cover this position yet"
+          hint="Try a wider field of view or pick a target."
+        />
+      );
+    }
     return (
       <ErrorState
-        message={res.error ?? "Request failed."}
+        message={
+          res.errorCode === "upstream_unavailable"
+            ? "The NASA archive is not answering right now."
+            : (res.error ?? "Request failed.")
+        }
         onRetry={props.onRetry}
       />
     );
@@ -184,20 +207,49 @@ function Explorer(props: ExplorerProps) {
   if (res.status === "idle") {
     return <EmptyState />;
   }
+  const pending = res.pending === true;
   if (res.status === "loading" && res.frames.length === 0) {
-    return <LoadingSkeleton />;
+    return (
+      <>
+        <LoadingSkeleton />
+        <p className="app-status" role="status">
+          {res.errorCode === "upstream_unavailable" && pending
+            ? "The NASA archive is slow to answer — retrying…"
+            : "Loading frames…"}
+        </p>
+      </>
+    );
   }
   if (res.frames.length === 0) {
+    if (pending) {
+      return (
+        <>
+          <LoadingSkeleton />
+          <p className="app-status" role="status">
+            Loading frames…
+          </p>
+        </>
+      );
+    }
+    if (url.mode !== "raw") {
+      return (
+        <EmptyState
+          title="Not enough comparable frames at this position"
+          hint={`${MODE_LABELS[url.mode]} needs several exposures of the same detector and band. Try Raw or another field.`}
+        />
+      );
+    }
     return (
       <EmptyState
-        title="No observations"
-        hint="SPHEREx has not covered this position yet, or no frames could be decoded."
+        title="No SPHEREx observations cover this position yet"
+        hint="Try a wider field of view or pick a target."
       />
     );
   }
 
   const width = res.response?.width ?? 64;
   const height = res.response?.height ?? 64;
+  const expected = res.expected ?? null;
   const current =
     res.frames[Math.min(Math.max(url.frame, 0), res.frames.length - 1)] ??
     null;
@@ -230,11 +282,43 @@ function Explorer(props: ExplorerProps) {
           transport={transport}
           onTransport={onTransport}
           embed={embed}
+          signed={url.mode === "diff"}
         />
       </div>
-      {!embed && res.response?.truncated === true ? (
+      {!embed && pending ? (
+        <p className="app-status" role="status">
+          {expected !== null
+            ? `Loading frames ${res.frames.length} / ${expected}`
+            : `Loading more frames… ${res.frames.length} so far`}
+        </p>
+      ) : !embed && res.settled === true && expected !== null ? (
         <p className="app-status">
-          Series truncated at {res.frames.length} of{" "}
+          {res.frames.length} of {expected} frames available (the archive
+          did not provide the rest).{" "}
+          <button
+            type="button"
+            className="app-status-retry"
+            onClick={props.onRetry}
+          >
+            Check again
+          </button>
+        </p>
+      ) : !embed && res.partial === true && expected !== null ? (
+        <p className="app-status">
+          Partial: {res.frames.length} of {expected} frames.{" "}
+          <button
+            type="button"
+            className="app-status-retry"
+            onClick={props.onRetry}
+          >
+            Retry
+          </button>
+        </p>
+      ) : !embed &&
+        url.mode === "raw" &&
+        res.response?.truncated === true ? (
+        <p className="app-status">
+          Showing {res.frames.length} frames spread over{" "}
           {res.response.total_observations ?? "?"} observations.
         </p>
       ) : null}
@@ -245,7 +329,6 @@ function Explorer(props: ExplorerProps) {
 export function App(props: AppProps) {
   const { apiBase = DEFAULT_API_BASE } = props;
   const [url, setUrl] = useUrlState();
-  const [detector, setDetector] = useState<number | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const [targets, setTargets] =
     useState<readonly MenuTarget[]>(PRESET_TARGETS);
@@ -283,16 +366,7 @@ export function App(props: AppProps) {
     fetchTargets(apiBase, ctrl.signal)
       .then((ts) => {
         if (ts.length === 0) return;
-        setTargets(
-          ts.map((t) => ({
-            id: t.id,
-            label: t.name,
-            ra: formatRaDeg(t.ra_deg),
-            dec: formatDecDeg(t.dec_deg),
-            fov: t.fov_deg,
-            note: t.note,
-          })),
-        );
+        setTargets(menuTargetsFromServer(ts));
       })
       .catch(() => {
         /* offline or backend down: keep PRESET_TARGETS */
@@ -330,10 +404,10 @@ export function App(props: AppProps) {
         </summary>
         <ModeSelector
           mode={url.mode}
-          detector={detector}
+          detector={url.det}
           onChange={(p) => {
             if (p.mode !== undefined) setUrl({ mode: p.mode, frame: 0 });
-            if (p.detector !== undefined) setDetector(p.detector);
+            if (p.detector !== undefined) setUrl({ det: p.detector, frame: 0 });
           }}
         />
       </details>
@@ -460,9 +534,10 @@ export function App(props: AppProps) {
         apiBase={apiBase}
         url={url}
         setUrl={setUrl}
-        detector={detector}
+        detector={url.det}
         embed={url.embed}
         mockData={mockData}
+        mockDelay={mockDelayMs()}
         onPick={spec.requestAt}
         onResult={setFramesResult}
         onRetry={() => setRetryNonce((n) => n + 1)}

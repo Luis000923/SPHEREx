@@ -66,7 +66,8 @@ export function makeMockFramesResponse(opts: MockOptions = {}): FramesResponse {
       wcs: {
         crpix: [width / 2, height / 2],
         crval: [133.795158, -7.245147],
-        cd: [[-scale, 0], [0, scale]],
+        // cd22 < 0: row 0 is north, the orientation the backend delivers.
+        cd: [[-scale, 0], [0, -scale]],
       },
       data_b64: float32ToBase64(pixels),
     });

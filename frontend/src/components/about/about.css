@@ -159,6 +159,10 @@ kbd {
 /* Links: quiet underline, no extra color. */
 .about-body a,
 .embed-credit a {
+  /* 44 px hit area without growing the text (touch target rule). */
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--target);
   color: inherit;
   text-decoration: underline;
   text-decoration-color: var(--border-strong);
@@ -233,7 +237,7 @@ kbd {
 
 .embed-credit {
   flex: none;
-  padding: 0 var(--space-2) var(--space-1);
+  padding: 0 var(--space-2);
   font-size: var(--text-xs);
   color: var(--fg-dim);
   text-align: center;
