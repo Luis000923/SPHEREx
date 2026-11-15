@@ -11,6 +11,7 @@
 //! differencing across colours is meaningless.
 
 use ndarray::Array2;
+use rayon::prelude::*;
 
 use super::error::ScienceError;
 use super::image::{check_compatible, check_wavelengths, stack_images, ScienceImage, StackOptions};
@@ -31,6 +32,81 @@ pub fn subtract_epochs(
 ) -> Result<ScienceImage, ScienceError> {
     check_compatible(later, earlier)?;
     check_wavelengths(later, earlier, tolerance_um)?;
+    let mut out = subtract_impl(later, earlier);
+    out.detector = later.detector;
+    out.wavelength_um = later.wavelength_um;
+    out.mjd = later.mjd;
+    out.zodi_subtracted = later.zodi_subtracted && earlier.zodi_subtracted;
+    Ok(out)
+}
+
+/// Below this raster area the subtraction runs serially; above it rows
+/// are spread over the rayon pool.
+const SUB_PAR_MIN_PIXELS: usize = 8192;
+
+/// One rendered output row: `(image, variance, flags, n_contrib)`.
+type SubRow = (Vec<f32>, Vec<f32>, Vec<i32>, Vec<u16>);
+
+/// Per-pixel subtraction: contiguous planes when both rasters are
+/// standard layout (always true for this crate's `ScienceImage`s), the
+/// generic-indexing loop otherwise. Output rows are independent, so the
+/// fast path renders them in parallel.
+fn subtract_impl(later: &ScienceImage, earlier: &ScienceImage) -> ScienceImage {
+    let (ny, nx) = (later.grid.ny, later.grid.nx);
+    let (li, ei, lv, ev, lf, ef, ln, en) = match (
+        later.image.as_slice(),
+        earlier.image.as_slice(),
+        later.variance.as_slice(),
+        earlier.variance.as_slice(),
+        later.flags.as_slice(),
+        earlier.flags.as_slice(),
+        later.n_contrib.as_slice(),
+        earlier.n_contrib.as_slice(),
+    ) {
+        (Some(li), Some(ei), Some(lv), Some(ev), Some(lf), Some(ef), Some(ln), Some(en)) => {
+            (li, ei, lv, ev, lf, ef, ln, en)
+        }
+        _ => return subtract_scalar(later, earlier),
+    };
+    let render = |y: usize| -> SubRow {
+        let base = y * nx;
+        let mut img = vec![f32::NAN; nx];
+        let mut var = vec![f32::NAN; nx];
+        let mut flg = vec![0i32; nx];
+        let mut nn = vec![0u16; nx];
+        for x in 0..nx {
+            let p = base + x;
+            flg[x] = lf[p] | ef[p];
+            let (a, b) = (li[p], ei[p]);
+            if !(a.is_finite() && b.is_finite()) {
+                continue;
+            }
+            img[x] = a - b;
+            nn[x] = ln[p].saturating_add(en[p]);
+            let (va, vb) = (lv[p], ev[p]);
+            if va.is_finite() && vb.is_finite() {
+                var[x] = va + vb;
+            }
+        }
+        (img, var, flg, nn)
+    };
+    let rows: Vec<SubRow> = if ny * nx >= SUB_PAR_MIN_PIXELS {
+        (0..ny).into_par_iter().map(render).collect()
+    } else {
+        (0..ny).map(render).collect()
+    };
+    let mut out = ScienceImage::blank(later.grid);
+    for (y, (img, var, flg, nn)) in rows.into_iter().enumerate() {
+        copy_row(&mut out.image, y, &img);
+        copy_row(&mut out.variance, y, &var);
+        copy_row(&mut out.flags, y, &flg);
+        copy_row(&mut out.n_contrib, y, &nn);
+    }
+    out
+}
+
+/// [`subtract_impl`] with generic `Array2` indexing (any layout).
+fn subtract_scalar(later: &ScienceImage, earlier: &ScienceImage) -> ScienceImage {
     let (ny, nx) = (later.grid.ny, later.grid.nx);
     let mut out = ScienceImage::blank(later.grid);
     for y in 0..ny {
@@ -50,11 +126,20 @@ pub fn subtract_epochs(
             }
         }
     }
-    out.detector = later.detector;
-    out.wavelength_um = later.wavelength_um;
-    out.mjd = later.mjd;
-    out.zodi_subtracted = later.zodi_subtracted && earlier.zodi_subtracted;
-    Ok(out)
+    out
+}
+
+/// Copy `src` into row `y` of `dst` (row length is `dst.ncols()`).
+fn copy_row<T: Copy>(dst: &mut Array2<T>, y: usize, src: &[T]) {
+    let nx = dst.ncols();
+    match dst.as_slice_mut() {
+        Some(s) => s[y * nx..(y + 1) * nx].copy_from_slice(src),
+        None => {
+            for (x, v) in src.iter().enumerate() {
+                dst[[y, x]] = *v;
+            }
+        }
+    }
 }
 
 /// Inverse-variance co-addition of two epochs: `w = 1/variance` as in

@@ -20,11 +20,13 @@ TODO(team): state accurately who defined the product idea. In this project Claud
 | Final submission texts (task `submission-final`) | Devin | Rewrote README, project page, checklist, demo outline/script and this file with only measured, verified facts; commits carry `Generated-by: Devin (SI-assisted)` | Claude + team review before merge |
 | Submission claims review (task `submission-claims-fix`) | Devin | Removed or softened over-precise proper-motion claims in README, project page, demo outline and video script so no claim exceeds the handoff/live-results evidence; commits carry `Generated-by: Devin (SI-assisted)` | Claude + team review before merge |
 | AirmanPrep re-skin (task `f13-airmanprep-design`) | Claude Opus 5.5 agent | Mapped the team brand AirmanPrep onto the frontend tokens (dark carbon default, paper light scheme, lime accent), bundled IBM Plex fonts, restyled chips/buttons/segmented controls/cards, original inline-SVG mark and favicon, About design credit, contrast tests; screenshots in `docs/screens-design/airmanprep-*` are real output of the built app; commits carry `Generated-by: Claude Opus 5.5 (SI-assisted)` | Claude + team review before merge |
+| Backend response-time optimisation (task `p1-backend-perf`) | Devin | Release profile, reproject/epoch-op rewrite with rayon, `spawn_blocking`, moka response cache, frozen-reference regression tests, perf measurements and handoff; commits carry `Generated-by: Devin (SI-assisted)` | Claude + team review before merge |
 
 SI-generated: essentially all application code, tests, Dockerfile/CI and
 documentation text. Not SI-generated: reported measurements and any
 screenshots/recordings in the demo (real output of the running application).
 TODO(team): authorship of the idea and product definition (see above).
+
 
 No SI-generated images, audio or video are used. No NASA logos or branding
 are generated.

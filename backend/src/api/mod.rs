@@ -55,6 +55,9 @@ pub mod params;
 mod spectrum;
 pub mod targets;
 
+#[doc(hidden)]
+pub use frames::{response_cache_stats, ResponseCacheStats};
+
 /// Upstream frame provider: the slice of
 /// [`crate::irsa::IrsaClient`] the API pipeline needs, abstracted so
 /// tests can substitute a stub with synthetic fixtures (no network).
@@ -207,6 +210,9 @@ impl<S> Clone for AppState<S> {
 impl<S> AppState<S> {
     /// Build state from a source and the process [`Config`].
     pub fn from_config(source: S, cfg: &Config) -> Self {
+        // `/frames` serialized-response cache (p1): a quarter of the
+        // decoded-result budget (`MAX_CACHE_MB`), clamped inside.
+        frames::configure_response_cache(cfg.irsa.cache_max_mb.saturating_mul(1024 * 1024) / 4);
         Self {
             source: Arc::new(source),
             collections: Arc::new(cfg.irsa.collections.clone()),
