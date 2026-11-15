@@ -20,6 +20,7 @@
 //! | `SIA_FALLBACK_TAP`     | `1` (query TAP when SIA is down)   |
 //! | `IRSA_TAP_URL`         | `https://irsa.ipac.caltech.edu/TAP` |
 //! | `HEALTH_PROBE_SECS`    | `300` (min seconds between probes) |
+//! | `SEARCH_DISK_TTL_SECS` | `86400` (disk SIA/TAP freshness)   |
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -50,6 +51,9 @@ pub enum CutoutSource {
 pub const DEFAULT_COLLECTIONS: &[&str] = &["spherex_dr1", "spherex_qr3"];
 /// Absolute cap on any IRSA response body kept in memory.
 const DEFAULT_MAX_BODY: usize = 64 * 1024 * 1024;
+/// Default freshness window for on-disk SIA/TAP search bodies
+/// (24 h, `SEARCH_DISK_TTL_SECS`).
+const DEFAULT_SEARCH_DISK_TTL: Duration = Duration::from_secs(86_400);
 
 /// Tuning knobs for [`crate::irsa::IrsaClient`].
 #[derive(Debug, Clone)]
@@ -101,6 +105,15 @@ pub struct IrsaConfig {
     /// `/api/v1/health` when nothing else reached IRSA recently
     /// (`HEALTH_PROBE_SECS`, default 300).
     pub health_probe_interval: Duration,
+    /// On-disk SIA/TAP search bodies (`search-*.xml` in `CACHE_DIR`)
+    /// older than this are refetched upstream
+    /// (`SEARCH_DISK_TTL_SECS`, default 86400). Fresh data wins whenever
+    /// upstream answers; a transient refetch failure serves the stale
+    /// body instead of erroring — that is what lets a baked preset
+    /// cache keep answering while IRSA is unreachable. `0` makes every
+    /// disk entry stale: upstream is tried first every time and stale
+    /// data fills in on failure.
+    pub search_disk_ttl: Duration,
 }
 
 impl Default for IrsaConfig {
@@ -129,6 +142,7 @@ impl Default for IrsaConfig {
             sia_fallback_tap: true,
             tap_url: DEFAULT_TAP_URL.to_string(),
             health_probe_interval: Duration::from_secs(300),
+            search_disk_ttl: DEFAULT_SEARCH_DISK_TTL,
         }
     }
 }
@@ -205,6 +219,10 @@ impl IrsaConfig {
         cfg.health_probe_interval = Duration::from_secs(env_u64(
             "HEALTH_PROBE_SECS",
             cfg.health_probe_interval.as_secs(),
+        )?);
+        cfg.search_disk_ttl = Duration::from_secs(env_u64(
+            "SEARCH_DISK_TTL_SECS",
+            cfg.search_disk_ttl.as_secs(),
         )?);
         cfg.validate()?;
         Ok(cfg)

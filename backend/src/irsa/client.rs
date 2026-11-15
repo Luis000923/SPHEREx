@@ -252,9 +252,6 @@ fn entry_weight(e: &Entry) -> u32 {
 /// never decodes it.
 const DISK_DROP_EXTENSIONS: &[&str] = &["EPSF"];
 
-/// On-disk SIA results older than this are refetched (new ingests).
-const SEARCH_DISK_TTL: Duration = Duration::from_secs(24 * 3600);
-
 /// FNV-1a 64 over `s` (file names for the disk cache).
 fn fnv64(s: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -737,7 +734,7 @@ impl IrsaClient {
         match self.sia_search(ra_deg, dec_deg, radius_deg, key).await {
             Ok(obs) => Ok(dedup_by_url(obs)),
             Err(e) => {
-                if !self.inner.cfg.sia_fallback_tap || !sia_failed(&e) {
+                if !self.inner.cfg.sia_fallback_tap || !transient_failure(&e) {
                     return Err(e);
                 }
                 warn!("SIA failed ({}); trying TAP fallback", e.log_safe());
@@ -1095,9 +1092,12 @@ impl IrsaClient {
     /// the click is a superset of "observations covering the click" —
     /// any observation covering the click intersects the cone at the
     /// click itself. The smallest covering cone wins: it carries the
-    /// least excess of observations that do not cover the click. Never
-    /// performs upstream traffic; `None` lets the caller run the real
-    /// search (at its own, possibly cached, position).
+    /// least excess of observations that do not cover the click. Fresh
+    /// memory/disk entries perform zero upstream traffic; a stale disk
+    /// body is refetched through the disk-cached search path (bounded
+    /// by the normal retry policy, serving stale on a transient
+    /// failure — see [`Self::disk_cached_get`]). `None` lets the caller
+    /// run the real search (at its own, possibly cached, position).
     pub async fn cached_observations_covering(
         &self,
         ra_deg: f64,
@@ -1133,8 +1133,15 @@ impl IrsaClient {
 
     /// Rebuild a deduplicated observation list from the per-collection
     /// SIA bodies under `dir`; `None` when any collection body is
-    /// missing, stale or unparseable — the caller then takes the normal
-    /// search path (never a partial upstream substitute).
+    /// missing and could not be refetched, or is unparseable — the
+    /// caller then takes the normal search path (never a partial
+    /// upstream substitute).
+    ///
+    /// A body older than the disk TTL is refetched through
+    /// [`Self::sia_body`] (fresh data wins when upstream answers; a
+    /// transient failure serves the stale body — see
+    /// [`Self::disk_cached_get`]), which is what lets a baked cone keep
+    /// answering while upstream is unreachable.
     async fn disk_observations(
         &self,
         key: &CacheKey,
@@ -1142,13 +1149,39 @@ impl IrsaClient {
     ) -> Option<Arc<Vec<Observation>>> {
         let mut all = Vec::new();
         for collection in &self.inner.cfg.collections {
-            let bytes =
-                disk_read(&dir.join(key.file_name(collection)), Some(SEARCH_DISK_TTL)).await?;
+            let bytes = match disk_read(
+                &dir.join(key.file_name(collection)),
+                Some(self.inner.cfg.search_disk_ttl),
+            )
+            .await
+            {
+                Some(b) => b,
+                None => self.refresh_search_body(key, collection).await?,
+            };
             let text = String::from_utf8(bytes).ok()?;
             all.extend(observations_from_votable(&text, collection).ok()?);
         }
         let obs = dedup_by_url(all);
         (!obs.is_empty()).then(|| Arc::new(obs))
+    }
+
+    /// Refetch one collection's SIA body for a `Search` key through the
+    /// disk-cached path: fresh upstream data when it answers, the stale
+    /// disk body on a transient failure. `None` for non-search keys and
+    /// on errors that must not be masked (the caller falls back to the
+    /// normal search path, which reports the same failure).
+    async fn refresh_search_body(&self, key: &CacheKey, collection: &str) -> Option<Vec<u8>> {
+        let (ra_deg, dec_deg, radius_deg) = match &key.kind {
+            KeyKind::Search { ra, dec, radius } => (
+                f64::from_bits(*ra),
+                f64::from_bits(*dec),
+                f64::from_bits(*radius),
+            ),
+            KeyKind::Frame { .. } => return None,
+        };
+        let sia = format!("{}/SIA", self.inner.cfg.base_url.trim_end_matches('/'));
+        let pos = pos_parameter(ra_deg, dec_deg, radius_deg);
+        self.sia_body(&sia, collection, &pos, key).await.ok()
     }
 
     /// Diagnostic: entries in the coverage index (for tests; the bound
@@ -1195,19 +1228,49 @@ impl IrsaClient {
             .as_ref()
             .map(|d| (d.clone(), key.file_name(suffix)));
         if let Some((d, name)) = &disk {
-            if let Some(b) = disk_read(&d.join(name), Some(SEARCH_DISK_TTL)).await {
+            if let Some(b) = disk_read(&d.join(name), Some(self.inner.cfg.search_disk_ttl)).await {
                 // Self-heal the coverage sidecar (same reasoning as the
                 // cutout path); written once per collection, idempotent.
                 disk_write_meta(d, key).await;
                 return Ok(b);
             }
         }
-        let b = self.get_with_retry(url, query, chan).await?;
-        if let Some((d, name)) = &disk {
-            disk_write(d, name, &b).await;
-            disk_write_meta(d, key).await;
+        match self.get_with_retry(url, query, chan).await {
+            Ok(b) => {
+                if let Some((d, name)) = &disk {
+                    disk_write(d, name, &b).await;
+                    disk_write_meta(d, key).await;
+                }
+                Ok(b)
+            }
+            Err(e) => {
+                // Serve-stale (b20): when the disk entry exists but is
+                // older than the TTL and the refetch failed transiently
+                // (5xx, timeouts, transport), serve the stale body —
+                // this is what keeps a baked preset cache answering
+                // while upstream is unreachable. Permanent failures
+                // (4xx, oversize bodies) and a missing disk entry stay
+                // authoritative; fresh data still wins whenever
+                // upstream answers.
+                if !transient_failure(&e) {
+                    return Err(e);
+                }
+                let Some((d, name)) = &disk else {
+                    return Err(e);
+                };
+                match disk_read(&d.join(name), None).await {
+                    Some(b) => {
+                        warn!(
+                            "disk cache: serving stale search body after upstream failure ({})",
+                            e.log_safe()
+                        );
+                        disk_write_meta(d, key).await;
+                        Ok(b)
+                    }
+                    None => Err(e),
+                }
+            }
         }
-        Ok(b)
     }
 
     /// Upstream reachability snapshot for `/api/v1/health`, derived
@@ -1749,11 +1812,12 @@ fn find_wcs_wave(tail: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 /// still exercises the real service path.
 const PROBE_POS: &str = "circle 0 0 0.0001";
 
-/// Whether a SIA failure qualifies for the TAP fallback: transient
-/// exhaustion (503/429/timeout/transport after all retries) or a
-/// non-retryable 5xx. 4xx answers, parse failures and empty results
-/// are authoritative and are returned unchanged.
-fn sia_failed(e: &IrsaError) -> bool {
+/// Whether an upstream failure is transient: retry exhaustion
+/// (503/429/timeout/transport after all retries) or a non-retryable
+/// 5xx. Drives both the SIA->TAP fallback and the disk-cache
+/// serve-stale path. 4xx answers, parse failures and empty results are
+/// authoritative and are returned unchanged.
+fn transient_failure(e: &IrsaError) -> bool {
     matches!(e, IrsaError::Unavailable { .. })
         || matches!(e, IrsaError::Http { status } if *status >= 500)
 }

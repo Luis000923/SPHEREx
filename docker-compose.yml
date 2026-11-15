@@ -35,6 +35,9 @@ services:
       # Persistent SIA/cutout cache; backed by the spherex-cache volume
       # below. Set CACHE_DIR= (empty) for an in-memory-only cache.
       CACHE_DIR: ${CACHE_DIR:-/data/cache}
+      # Freshness window for on-disk SIA/TAP search bodies; older bodies
+      # are refetched and a transient refetch failure serves stale.
+      SEARCH_DISK_TTL_SECS: ${SEARCH_DISK_TTL_SECS:-86400}
       MAX_FRAMES: ${MAX_FRAMES:-60}
       MAX_CACHE_MB: ${MAX_CACHE_MB:-200}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}

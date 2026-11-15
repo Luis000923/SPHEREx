@@ -71,11 +71,24 @@ A mounted volume still works and is additive: a named volume is initialized
 from the image's `/data/cache` on first use (it inherits the baked data),
 and a bind mount replaces it entirely (cold cache, still functional).
 
-Freshness: the backend treats cached SIA bodies as fresh for 24 h counted
-from file mtime (`SEARCH_DISK_TTL`); cutouts never expire. The image
-entrypoint (`scripts/docker-entrypoint.sh`) refreshes mtimes at start and
-hourly, so the baked SIA bodies stay servable for the whole container
-lifetime even when upstream is unreachable.
+Freshness and serve-stale: the backend treats cached SIA bodies as fresh
+for `SEARCH_DISK_TTL_SECS` (default 86400 s) counted from file mtime;
+cutouts never expire. A stale body is refetched upstream — fresh data
+wins whenever IRSA answers — and a transient refetch failure (5xx,
+timeouts, transport errors) serves the stale body instead of erroring,
+so the baked presets keep working while upstream is unreachable. The
+image entrypoint (`scripts/docker-entrypoint.sh`) still refreshes mtimes
+at start and hourly as belt and braces: serve-stale makes it optional.
+
+Coordinate snapping: `/api/v1/frames` positions within
+`PRESET_SNAP_ARCSEC` (0.3 arcsec, a constant in
+`backend/src/api/params.rs` covering every 4-decimal-place re-typing)
+of a preset target — with `fov` within 1e-3 deg of that preset's — are
+rewritten to the preset's exact constants before any cache lookup, and
+the response `query` echo reports the snapped values. This keeps the
+baked cache valid for rounded or re-typed coordinates (e.g.
+`ra=269.4463` for Barnard's Star); positions beyond the snap radius or
+with a different `fov` are unaffected.
 
 ## Environment variables
 
@@ -112,6 +125,7 @@ variable below is read by `backend/src/config.rs` or
 | `CACHE_DIR` | `/data/cache` in the image (unset in source = memory only) | Persistent cache directory: SIA results and cutouts survive restarts. The image bakes the five presets here (see "Baked preset cache"). Compose mounts the `spherex-cache` volume at `/data/cache`; the container user is uid 999 and must be able to write it (see "Cache volume" below). |
 | `MAX_FRAMES` | `60` | Upper bound on frames per `/api/v1/frames` (contract max 60). |
 | `MAX_CACHE_MB` | `200` | In-memory cutout cache cap, MiB. |
+| `SEARCH_DISK_TTL_SECS` | `86400` | Freshness window for on-disk SIA/TAP search bodies, seconds (counted from file mtime). Older bodies are refetched upstream; a transient refetch failure serves the stale body (keeps the baked cache answering while IRSA is unreachable). `0` = always try upstream first. |
 
 `PORT`, `STATIC_DIR`, `RUST_LOG`, `MAX_CACHE_MB`, `IRSA_MAX_CONCURRENCY` and
 `CACHE_DIR` have defaults baked into the image; set the rest per environment
