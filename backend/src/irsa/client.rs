@@ -779,11 +779,27 @@ impl IrsaClient {
             });
         }
         let mut parts: Vec<(usize, Vec<Observation>)> = Vec::new();
+        let mut first_err: Option<IrsaError> = None;
         while let Some(joined) = set.join_next().await {
-            let part = joined.map_err(|e| {
-                IrsaError::Internal(format!("SIA task failed to join: {}", join_error_kind(&e)))
-            })??;
-            parts.push(part);
+            let result = joined
+                .map_err(|e| {
+                    IrsaError::Internal(format!("SIA task failed to join: {}", join_error_kind(&e)))
+                })
+                .and_then(|r| r);
+            match result {
+                Ok(part) => parts.push(part),
+                Err(e) => {
+                    // One collection being down must not hide the others:
+                    // keep going and only fail when none answered.
+                    warn!("SIA collection failed: {}", e.log_safe());
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+        if parts.is_empty() {
+            if let Some(e) = first_err {
+                return Err(e);
+            }
         }
         // Keep the configured collection order (dedup: first wins).
         parts.sort_by_key(|(idx, _)| *idx);
