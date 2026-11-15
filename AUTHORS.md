@@ -4,3 +4,4 @@
 - cruncron-png (https://github.com/cruncron-png) — Team member
 - charlie-002-XD (https://github.com/charlie-002-XD) — Team member
 - Claude (https://github.com/claude) — AI-assisted development by Anthropic: coordination, API contract, helper scripts, documentation, and the integration, QA and design passes (see SI_USAGE.md)
+- Devin (https://github.com/apps/devin-ai-integration) — AI software engineer by Cognition: implemented most backend and frontend tasks in isolated branches (see SI_USAGE.md)
