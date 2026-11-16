@@ -68,24 +68,32 @@
 .tmenu {
   position: relative;
 }
+/* Filled accent button: the preset menu is the quickest way to a first
+   result, so it must be the most visible control in the header. */
 .tmenu-summary {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
   min-height: var(--target);
-  padding: 0 var(--space-3);
+  padding: 0 var(--space-4);
   border-radius: var(--radius-m);
-  color: var(--fg-dim);
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: var(--hairline) solid var(--accent-line);
   font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+  cursor: pointer;
   user-select: none;
   transition:
-    color var(--dur-1) var(--ease),
-    background-color var(--dur-1) var(--ease);
+    background-color var(--dur-1) var(--ease),
+    transform var(--dur-1) var(--ease);
 }
 .tmenu-summary:hover,
 .tmenu[open] > .tmenu-summary {
-  color: var(--fg);
-  background: var(--bg-hover);
+  background: var(--accent-hover);
+}
+.tmenu-summary:active {
+  transform: translateY(1px);
 }
 .tmenu-icon {
   width: 1rem;
