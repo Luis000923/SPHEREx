@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SPHEREx Blink · Presentation</title>
-<meta name="description" content="SPHEREx Blink: a public time-lapse viewer for SPHEREx images. Presentation by Team AirmanPrep, NASA Space Apps Challenge 2026.">
+<title>SPHEREx Blink and Planeta-X · Presentation</title>
+<meta name="description" content="SPHEREx Blink and Planeta-X: two tools for spotting moving objects in SPHEREx-era images. Presentation by Team AirmanPrep, NASA Space Apps Challenge 2026.">
 <style>
   :root {
     --paper: #f3efe6;
@@ -95,6 +95,14 @@
   .btn:focus-visible, .nav button:focus-visible { outline: 3px solid var(--signal); outline-offset: 2px; }
 
   /* ---- navigation bar ---- */
+  .stack { display: grid; gap: 1rem; }
+  .stack figure img { max-height: 34dvh; width: auto; max-width: 100%; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(1rem, 3vw, 2.5rem); margin-top: 1.5rem; }
+  @media (max-width: 820px) { .pair { grid-template-columns: 1fr; } }
+  .lede.wide { max-width: 44em; }
+  .small { font-size: .875rem; }
+  .btn-col { display: grid; gap: .75rem; align-content: center; }
+  .btn-col .btns { margin-top: 0; }
   .nav {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
     display: flex; align-items: center; gap: .75rem;
@@ -125,23 +133,29 @@
 </style>
 </head>
 <body>
-<main class="deck" id="deck" aria-label="SPHEREx Blink presentation">
+<main class="deck" id="deck" aria-label="SPHEREx Blink and Planeta-X presentation">
 
 <!-- 1 · Title -->
 <section class="slide dark" aria-label="Title">
   <div class="grid flip">
+    <div class="stack">
+      <figure>
+        <img src="img/barnards-star-1440-raw-spectrum-field-star.jpg" alt="SPHEREx Blink showing Barnard's Star with the spectrum panel open" width="874" height="492">
+        <figcaption>SPHEREx Blink</figcaption>
+      </figure>
+      <figure>
+        <img src="img/planeta-x-app.jpg" alt="Planeta-X comparing two epochs with a movement vector" width="1456" height="820">
+        <figcaption>Planeta-X</figcaption>
+      </figure>
+    </div>
     <div>
       <p class="kicker">NASA Space Apps Challenge 2026 · Planet X and SPHEREx</p>
-      <h1>SPHEREx Blink</h1>
-      <p class="lede">Type a position in the sky. Watch every SPHEREx image of it play as a short film, and see what moved.</p>
+      <h1>Two tools, one sky</h1>
+      <p class="lede">SPHEREx Blink and Planeta-X: two ways to spot moving objects in SPHEREx-era infrared images.</p>
       <hr class="rule">
       <p class="team">Team <b>AirmanPrep</b> · <a href="https://airmanprep.com">AirmanPrep.com</a><br>
         Luis000923 · charlie-002-XD · cruncron-png</p>
     </div>
-    <figure>
-      <img src="img/barnards-star-1440-raw-spectrum-field-star.jpg" alt="SPHEREx Blink showing Barnard's Star with the spectrum panel open" width="874" height="492">
-      <figcaption>Barnard's Star in the live app, with the spectrum panel and instrument flags.</figcaption>
-    </figure>
   </div>
 </section>
 
@@ -150,47 +164,45 @@
   <div class="grid">
     <div>
       <p class="kicker">The problem</p>
-      <h2>The whole sky is public. Almost nobody can open it.</h2>
-      <p class="lede">SPHEREx maps the entire sky in 102 infrared colours. Every image sits in a multi-extension FITS file behind an archive interface.</p>
-      <p>To check whether something at one position moved or changed, an astronomer compares images taken at different dates. That is how Pluto was found. It is still a job for people who already know the tools.</p>
+      <h2>The sky is public. The tools aren't.</h2>
+      <p class="lede">SPHEREx maps the entire sky in 102 infrared colours, but every image sits in a multi-extension FITS file behind an archive interface.</p>
+      <p>Checking whether something moved means comparing dates by hand. That is how Pluto was found, and it is still a job for experts.</p>
     </div>
     <div>
       <p class="big">102</p>
       <p class="mute">infrared bands per image, six detector arrays, two full-sky passes a year.</p>
       <hr class="rule">
-      <p><b>The question we wanted to answer for anyone:</b><br>“Does anything change at this position?”</p>
+      <p><b>The challenge:</b> a public web tool that shows a patch of sky as a short film, so anyone can spot what moves.</p>
     </div>
   </div>
 </section>
 
-<!-- 3 · Solution -->
-<section class="slide" aria-label="The solution">
-  <div class="grid flip">
+<!-- 3 · Why two -->
+<section class="slide" aria-label="Why two projects">
+  <p class="kicker">One problem, two angles</p>
+  <h2>Why two projects for one problem?</h2>
+  <p class="lede wide">One starts from the data, the other from the person using it. We built both and kept them side by side so you can compare them.</p>
+  <div class="pair">
     <figure>
-      <img src="img/epsilon-indi-b-1440-raw-spectrum.jpg" alt="SPHEREx Blink playing 24 epochs of Epsilon Indi B" width="874" height="492">
-      <figcaption>Epsilon Indi B: 24 frames chosen from 488 archive observations.</figcaption>
+      <img src="img/barnards-star-1440-diff-after-fix-north-up.jpg" alt="SPHEREx Blink difference view of Barnard's Star" width="874" height="492">
+      <figcaption><b>SPHEREx Blink</b> · Luis. Starts from the data. Real SPHEREx exposures fetched live for any RA/Dec. Built to measure motion.</figcaption>
     </figure>
-    <div>
-      <p class="kicker">The solution</p>
-      <h2>Blink the sky in your browser.</h2>
-      <p class="lede">Enter coordinates, press play. We fetch every exposure that covers the patch and line them up in time.</p>
-      <ul class="plain">
-        <li><b>Play, scrub, step</b> through epochs, or flip between two of them.</li>
-        <li><b>Four views:</b> raw, epoch difference, co-add and per-detector stack.</li>
-        <li><b>Five official targets</b> one click away; any RA/Dec works.</li>
-      </ul>
-    </div>
+    <figure>
+      <img src="img/planeta-x-app.jpg" alt="Planeta-X epoch comparator with a movement vector" width="1456" height="820">
+      <figcaption><b>Planeta-X</b> · Charlie. Starts from the user. Compare two epochs, click what moved, export the report. Built to learn and report.</figcaption>
+    </figure>
   </div>
 </section>
 
-<!-- 4 · Proof -->
-<section class="slide dark" aria-label="Does it work">
+<!-- 4 · SPHEREx Blink: proof -->
+<section class="slide dark" aria-label="SPHEREx Blink">
   <div class="grid">
     <div>
-      <p class="kicker">Does it work?</p>
-      <h2>Barnard's Star moves. The diff view shows it.</h2>
-      <p class="lede">In difference mode a moving star leaves a bright and a dark half. We measured about 9 arcseconds per year northward; the catalogue value is 10.4, our uncertainty about 2.</p>
-      <p class="mute">We also say what we could not do. WISE 0855 is too faint for single frames and Epsilon Indi B is an unresolved binary, so the app does not claim a detection for either.</p>
+      <p class="kicker">SPHEREx Blink</p>
+      <h2>Real data, real motion.</h2>
+      <p class="lede">Enter RA/Dec and every SPHEREx exposure of that patch plays as a time-lapse. In difference mode Barnard's Star leaves a bright and a dark half.</p>
+      <p>We measured about 9 arcsec per year north; the catalogue says 10.4, our uncertainty is about 2.</p>
+      <p class="mute">WISE 0855 is too faint for single frames and Epsilon Indi B is an unresolved binary, so the app claims no detection for either.</p>
     </div>
     <figure>
       <img src="img/barnards-star-1440-diff-after-fix-north-up.jpg" alt="Difference image of Barnard's Star with a bright and dark pair" width="874" height="492">
@@ -199,65 +211,65 @@
   </div>
 </section>
 
-<!-- 5 · Beyond the movie -->
-<section class="slide" aria-label="Spectra and flags">
+<!-- 5 · SPHEREx Blink: under the hood -->
+<section class="slide" aria-label="SPHEREx Blink data">
   <div class="grid flip">
     <figure>
       <img src="img/r-draconis-1440-raw-saturated-spectrum.jpg" alt="R Draconis with spectrum panel and flag badges" width="874" height="492">
       <figcaption>R Draconis: the saturated core is flagged, not hidden.</figcaption>
     </figure>
     <div>
-      <p class="kicker">More than a movie</p>
-      <h2>Click a pixel, get its spectrum.</h2>
-      <p class="lede">The spectrum is assembled from every exposure that covers that pixel, with error bars.</p>
-      <ul class="plain">
-        <li><b>Per-frame metadata:</b> date, detector, wavelength.</li>
-        <li><b>Quality flags</b> read from the FITS headers, never hardcoded.</li>
-        <li><b>Gaia and AllWISE</b> markers show what is already catalogued.</li>
-      </ul>
-    </div>
-  </div>
-</section>
-
-<!-- 6 · Data and engineering -->
-<section class="slide dark" aria-label="Data and engineering">
-  <div class="grid">
-    <div>
-      <p class="kicker">NASA data, handled politely</p>
-      <h2>Live archive data, fast enough to feel instant.</h2>
-      <p>Epochs come from the IRSA SIA2 service with a TAP fallback. Cutouts are read as byte ranges from the open SPHEREx copy on AWS, so a few kilobytes travel instead of whole files. Gaia and AllWISE come through CDS.</p>
+      <p class="kicker">SPHEREx Blink · the data</p>
+      <h2>Spectra, flags and live NASA data.</h2>
+      <p class="lede">Click a pixel for its spectrum. Flags come from the FITS headers. Epochs come from IRSA, cutouts from the open SPHEREx copy on AWS.</p>
       <dl class="stats">
-        <div><dt>280–565</dt><dd>observations found per target</dd></div>
-        <div><dt>24</dt><dd>frames spread across detectors D1–D6</dd></div>
-        <div><dt>0.3–0.7 s</dt><dd>to first frame from the shipped cache</dd></div>
+        <div><dt>280–565</dt><dd>observations per target</dd></div>
+        <div><dt>24</dt><dd>frames across detectors D1–D6</dd></div>
+        <div><dt>0.3–0.7 s</dt><dd>to first frame, shipped cache</dd></div>
       </dl>
-      <p class="mute" style="margin-top:1rem">Rust backend, React frontend, one container. At most three parallel requests to IRSA, because it is a shared public service.</p>
     </div>
-    <figure>
-      <img src="img/barnards-star-1440-overlay-fallback-loaded.jpg" alt="Catalogue overlay running over real SPHEREx data" width="874" height="492">
-      <figcaption>Catalogue overlay on real data.</figcaption>
-    </figure>
   </div>
 </section>
 
-<!-- 7 · Try it -->
-<section class="slide" aria-label="Try it">
+<!-- 6 · Planeta-X -->
+<section class="slide dark" aria-label="Planeta-X">
   <div class="grid flip">
     <figure>
-      <img src="img/barnards-star-375-768-embed-iframes.jpg" alt="The app at phone width, tablet width and embedded in an iframe" width="815" height="574">
-      <figcaption>Phone, tablet and embedded in another page.</figcaption>
+      <img src="img/planeta-x-app.jpg" alt="Planeta-X comparing Epoch A and Epoch B with a trajectory vector and a findings list" width="1456" height="820">
+      <figcaption>Planeta-X: slide between epochs, mark the mover, read the findings list.</figcaption>
     </figure>
     <div>
-      <p class="kicker">Use it</p>
-      <h2>Every view is a link.</h2>
-      <p class="lede">Teachers, amateurs and researchers look at the same sky. Share a position, or embed the viewer in any page.</p>
+      <p class="kicker">Planeta-X</p>
+      <h2>Compare epochs, mark what moved.</h2>
+      <p class="lede">Slide or blink between Epoch A and Epoch B across four near-infrared bands. Click an object that shifted and the app draws its A to B vector.</p>
       <ul class="plain">
-        <li><b>New data releases</b> are adopted by configuration, with no code change.</li>
-        <li><b>Open source</b> under Apache-2.0.</li>
+        <li>Findings list with <b>export to CSV or JSON</b>.</li>
+        <li>Interface in <b>Spanish and English</b>; PHP backend.</li>
       </ul>
+      <p class="mute small">Its images are WISE cutouts from IRSA and simulated SPHEREx-style regions, not live SPHEREx exposures.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 7 · Try both -->
+<section class="slide" aria-label="Try both">
+  <div class="grid">
+    <div>
+      <p class="kicker">Use them</p>
+      <h2>Open both and compare.</h2>
+      <p class="lede">Same challenge, two answers. One reads the real archive, the other teaches and records the hunt.</p>
+      <p>SPHEREx Blink is open source under Apache-2.0; every view is a link you can share or embed.</p>
+    </div>
+    <div class="btn-col">
       <div class="btns">
         <a class="btn solid" href="https://spherex-4e2z.onrender.com/" target="_blank" rel="noopener noreferrer">Open SPHEREx Blink</a>
-        <a class="btn" href="https://github.com/Luis000923/SPHEREx/" target="_blank" rel="noopener noreferrer">Source code</a>
+        <a class="btn solid" href="https://app.planeta-x.earth" target="_blank" rel="noopener noreferrer">Open Planeta-X</a>
+      </div>
+      <div class="btns">
+        <a class="btn" href="https://github.com/Luis000923/SPHEREx/" target="_blank" rel="noopener noreferrer">Blink source</a>
+        <a class="btn" href="https://github.com/charlie-002-XD/Planeta-X" target="_blank" rel="noopener noreferrer">Planeta-X source</a>
+      </div>
+      <div class="btns">
         <a class="btn" href="https://airmanprep.com" target="_blank" rel="noopener noreferrer">AirmanPrep.com</a>
       </div>
     </div>

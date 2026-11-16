@@ -15,7 +15,7 @@ $projects = [
     [
         'name' => 'Planeta X',
         'author' => 'Charlie',
-        'summary' => 'The second tool of the team for the same challenge, built by a teammate. Open it to compare approaches.',
+        'summary' => 'Compare two epochs of the same field with a slider or blink, click what moved, draw its A to B path and export your findings. Interface in Spanish and English.',
         'app' => 'https://app.planeta-x.earth',
         'repo' => 'https://github.com/charlie-002-XD/Planeta-X',
         'status_id' => null,
@@ -90,6 +90,16 @@ $projects = [
   .status { font-size: .8125rem; color: var(--dim); display: flex; align-items: center; gap: .4rem; }
   .dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--warn); }
   .status[data-state="ok"] .dot { background: var(--ok); }
+  .why { margin-top: 1rem; padding: 1.25rem; border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
+  .why h2 { margin: 0 0 .5rem; font-size: 1.15rem; }
+  .why-lead, .why-note { margin: 0 0 1rem; color: var(--dim); max-width: 46rem; }
+  .why-note { margin: 1rem 0 0; color: var(--fg); }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; font-size: .9375rem; }
+  th, td { text-align: left; vertical-align: top; padding: .6rem .75rem; border-top: 1px solid var(--border); }
+  thead th { border-top: 0; font-size: .8125rem; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  tbody th { color: var(--dim); font-weight: 600; width: 7.5rem; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .deck-band {
     display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;
     margin-top: 1rem; padding: 1.25rem; border: 1px solid var(--border); border-radius: 14px;
@@ -105,7 +115,7 @@ $projects = [
 <main>
   <p class="team">Team <strong>AirmanPrep</strong> · <a href="https://airmanprep.com" target="_blank" rel="noopener noreferrer">AirmanPrep.com</a></p>
   <h1>Planet X and SPHEREx</h1>
-  <p class="lead">We are Team AirmanPrep, competing in the NASA Space Apps Challenge 2026. Two public web tools that turn SPHEREx images of any sky position into a time-lapse. Open each app and its source code below.</p>
+  <p class="lead">We are Team AirmanPrep, competing in the NASA Space Apps Challenge 2026. Two public web tools for the same challenge, built from two different angles. Open each app and its source code below.</p>
 
   <section class="grid" aria-label="Projects">
     <?php foreach ($projects as $p): ?>
@@ -124,6 +134,27 @@ $projects = [
       </div>
     </article>
     <?php endforeach; ?>
+  </section>
+
+  <section class="why" aria-labelledby="why-title">
+    <h2 id="why-title">Why two projects for one problem?</h2>
+    <p class="why-lead">The challenge asks for one thing: show a patch of sky as a short film so people can spot moving objects. There are two honest ways in. One starts from the data, the other from the person using it. We built both and kept them side by side so you can compare them.</p>
+    <div class="table-wrap">
+      <table>
+        <caption class="sr-only">SPHEREx Blink compared with Planeta X</caption>
+        <thead>
+          <tr><th scope="col"></th><th scope="col">SPHEREx Blink</th><th scope="col">Planeta X</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">Starts from</th><td>The data: real SPHEREx exposures</td><td>The user: a guided hunt</td></tr>
+          <tr><th scope="row">Images</th><td>Fetched live from the NASA archive for any RA/Dec</td><td>WISE cutouts from the archive and simulated SPHEREx-style regions</td></tr>
+          <tr><th scope="row">You do</th><td>Play the time-lapse, switch to difference, read the spectrum</td><td>Compare epochs, click what moved, draw its path, export findings</td></tr>
+          <tr><th scope="row">Good for</th><td>Measuring motion on real data</td><td>Learning the method and reporting candidates</td></tr>
+          <tr><th scope="row">Built with</th><td>Rust backend, React frontend</td><td>React frontend, PHP API</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="why-note">SPHEREx Blink answers "what does the real archive show here?". Planeta X answers "how would I mark and report a mover?". Neither replaces the other.</p>
   </section>
 
   <section class="deck-band" aria-label="Presentation">
