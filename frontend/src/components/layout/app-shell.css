@@ -71,6 +71,7 @@
 /* Filled accent button: the preset menu is the quickest way to a first
    result, so it must be the most visible control in the header. */
 .tmenu-summary {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
@@ -94,6 +95,37 @@
 }
 .tmenu-summary:active {
   transform: translateY(1px);
+}
+/* Arrow under the Targets button until the user touches it. */
+.tmenu-hint {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 50%;
+  z-index: 20;
+  width: 1.75rem;
+  margin-left: -0.875rem;
+  color: var(--accent-ink);
+  pointer-events: none;
+  animation: tmenu-point 1s ease-in-out infinite;
+}
+.tmenu-hint svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+@keyframes tmenu-point {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-0.4rem);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tmenu-hint {
+    animation: none;
+  }
 }
 .tmenu-icon {
   width: 1rem;

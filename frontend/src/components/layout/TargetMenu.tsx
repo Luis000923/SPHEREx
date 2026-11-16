@@ -1,7 +1,9 @@
 // Header target-preset menu. Built on a native <details> popover so it is
 // fully keyboard operable; picking a target submits its coordinates and
-// closes the popup. Targets arrive pre-normalized (see App.tsx).
-import { useEffect, useRef } from "react";
+// closes the popup. Targets arrive pre-normalized (see App.tsx). A bouncing
+// arrow points at the button on every visit until the user touches it
+// (deliberately not persisted: the hint returns on each new page load).
+import { useEffect, useRef, useState } from "react";
 import type { CoordinateValue } from "../controls/CoordinateSearchBar";
 
 export interface MenuTarget {
@@ -26,6 +28,7 @@ export interface TargetMenuProps {
 export function TargetMenu(props: TargetMenuProps) {
   const { targets, onSelect, onPrefetch } = props;
   const ref = useRef<HTMLDetailsElement | null>(null);
+  const [touched, setTouched] = useState(false);
 
   useEffect(() => {
     const close = () => {
@@ -54,7 +57,15 @@ export function TargetMenu(props: TargetMenuProps) {
   }, []);
 
   return (
-    <details className="tmenu" ref={ref}>
+    <details
+      className="tmenu"
+      ref={ref}
+      onPointerDown={() => setTouched(true)}
+      onFocus={() => setTouched(true)}
+      onToggle={(e) => {
+        if (e.currentTarget.open) setTouched(true);
+      }}
+    >
       <summary className="tmenu-summary">
         <svg
           className="tmenu-icon"
@@ -66,6 +77,20 @@ export function TargetMenu(props: TargetMenuProps) {
           <circle cx="8" cy="8" r="1.6" fill="currentColor" />
         </svg>
         <span>Targets</span>
+        {touched ? null : (
+          <span className="tmenu-hint" aria-hidden="true">
+            <svg viewBox="0 0 24 32" focusable="false">
+              <path
+                d="M12 30V6M4 13l8-8 8 8"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+        )}
       </summary>
       <div className="tmenu-list">
         {targets.map((t) => (
