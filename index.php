@@ -90,6 +90,13 @@ $projects = [
   .status { font-size: .8125rem; color: var(--dim); display: flex; align-items: center; gap: .4rem; }
   .dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--warn); }
   .status[data-state="ok"] .dot { background: var(--ok); }
+  .deck-band {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;
+    margin-top: 1rem; padding: 1.25rem; border: 1px solid var(--border); border-radius: 14px;
+    background: var(--card);
+  }
+  .deck-band h2 { margin: 0 0 .15rem; font-size: 1.15rem; }
+  .deck-band p { margin: 0; color: var(--dim); }
   footer { margin-top: 2.5rem; color: var(--dim); font-size: .875rem; }
   footer a { color: inherit; }
 </style>
@@ -117,6 +124,14 @@ $projects = [
       </div>
     </article>
     <?php endforeach; ?>
+  </section>
+
+  <section class="deck-band" aria-label="Presentation">
+    <div>
+      <h2>Presentation</h2>
+      <p>Seven slides on SPHEREx Blink: the problem, the tool, the evidence and the data behind it.</p>
+    </div>
+    <a class="btn btn-primary" href="presentation/">View the presentation</a>
   </section>
 
   <footer>
