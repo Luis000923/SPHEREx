@@ -64,6 +64,9 @@ $projects = [
   }
   main { max-width: 56rem; margin: 0 auto; padding: 2.5rem 1rem 3rem; }
   h1 { font-size: clamp(1.6rem, 5vw, 2.4rem); line-height: 1.15; margin: 0 0 .5rem; }
+  .team { margin: 0 0 .75rem; color: var(--dim); font-size: .9375rem; }
+  .team strong { color: var(--fg); }
+  .team a { color: var(--fg); font-weight: 600; }
   .lead { color: var(--dim); max-width: 42rem; margin: 0 0 2rem; }
   .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); }
   .card {
@@ -93,8 +96,9 @@ $projects = [
 </head>
 <body>
 <main>
+  <p class="team">Team <strong>AirmanPrep</strong> · <a href="https://airmanprep.com" target="_blank" rel="noopener noreferrer">AirmanPrep.com</a></p>
   <h1>Planet X and SPHEREx</h1>
-  <p class="lead">Team AirmanPrep, NASA Space Apps Challenge 2026. Two public web tools that turn SPHEREx images of any sky position into a time-lapse. Open each app and its source code below.</p>
+  <p class="lead">We are Team AirmanPrep, competing in the NASA Space Apps Challenge 2026. Two public web tools that turn SPHEREx images of any sky position into a time-lapse. Open each app and its source code below.</p>
 
   <section class="grid" aria-label="Projects">
     <?php foreach ($projects as $p): ?>
@@ -116,6 +120,7 @@ $projects = [
   </section>
 
   <footer>
+    <p>Made by Team AirmanPrep. Visit our company: <a href="https://airmanprep.com" target="_blank" rel="noopener noreferrer">AirmanPrep.com</a>.</p>
     <p>Data: NASA/IPAC Infrared Science Archive (IRSA), SPHEREx spectral images. Hosting of SPHEREx Blink may take up to a minute to wake the first time; this page keeps it awake.</p>
   </footer>
 </main>
