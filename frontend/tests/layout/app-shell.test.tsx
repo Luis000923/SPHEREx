@@ -144,6 +144,12 @@ describe("viewer states", () => {
     expect(html).toContain("Loading frames");
   });
 
+  it("loading state shows an orbit animation and a progress message", () => {
+    const html = renderToStaticMarkup(<LoadingSkeleton />);
+    expect(html).toContain("skel-orbit");
+    expect(html).toContain("skel-text");
+  });
+
   it("empty state explains how to load a time-lapse", () => {
     const html = renderToStaticMarkup(<EmptyState />);
     expect(html).toContain("Point at the sky");

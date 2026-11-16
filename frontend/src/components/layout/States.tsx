@@ -1,6 +1,9 @@
 // Full-area states for the main viewer region: empty (no query yet or no
-// data), loading (single skeleton block, no spinners) and error with a
-// Retry action. They fill .app-main the same way the canvas does.
+// data), loading (skeleton block with a centered orbit animation, an
+// elapsed-seconds counter and a progressive reassurance message) and error
+// with a Retry action. They fill .app-main the same way the canvas does.
+import { useEffect, useState } from "react";
+
 export interface EmptyStateProps {
   title?: string;
   hint?: string;
@@ -53,10 +56,50 @@ export function EmptyState(props: EmptyStateProps) {
   );
 }
 
+function loadingMessage(seconds: number): string {
+  if (seconds < 6) return "Loading frames…";
+  if (seconds < 20) return "Fetching images from the NASA archive…";
+  return "Still working. New sky positions can take up to a minute; the preset targets load faster.";
+}
+
 export function LoadingSkeleton() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setSeconds((s) => s + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
   return (
     <div className="state-loading" role="status">
       <div className="skel" aria-hidden="true" />
+      <div className="skel-overlay" aria-hidden="true">
+        {/* Same orbit + body as the brand mark, spinning. */}
+        <svg
+          className="skel-orbit"
+          viewBox="0 0 22 22"
+          focusable="false"
+        >
+          <ellipse
+            cx="11"
+            cy="11"
+            rx="9.25"
+            ry="4.25"
+            transform="rotate(-24 11 11)"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1"
+          />
+          <circle className="skel-body" cx="11" cy="11" r="3" />
+          <circle
+            className="skel-moon"
+            cx="18.6"
+            cy="6.4"
+            r="1.4"
+            fill="currentColor"
+          />
+        </svg>
+        <p className="skel-text">{loadingMessage(seconds)}</p>
+        {seconds >= 3 ? <p className="skel-time">{seconds} s</p> : null}
+      </div>
       <span className="visually-hidden">Loading frames…</span>
     </div>
   );
